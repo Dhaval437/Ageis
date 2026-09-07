@@ -37,8 +37,9 @@ export default tseslint.config(
     },
   },
   {
-    // Electron MAIN + preload run in Node.
-    files: ['apps/desktop/**/*.ts'],
+    // Electron MAIN + preload run in Node. The preload is `.cts` because a
+    // sandboxed preload cannot be an ES module (REMEMBER.md § 5).
+    files: ['apps/desktop/**/*.{ts,cts,mts}'],
     languageOptions: { globals: globals.node },
   },
   {

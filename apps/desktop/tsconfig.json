@@ -1,11 +1,13 @@
+// The default project: covers sources *and* tests, so eslint's type-aware rules
+// and the editor see every file. `tsconfig.build.json` is what actually emits.
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "src",
-    "outDir": "dist",
+    "rootDir": ".",
+    "noEmit": true,
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "types": ["node"]
   },
-  "include": ["src"]
+  "include": ["src", "tests"]
 }

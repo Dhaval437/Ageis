@@ -1,0 +1,11 @@
+// Emits MAIN + preload to `dist/`. Tests are excluded so nothing under
+// `tests/` can ever end up in a packaged build.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "noEmit": false
+  },
+  "include": ["src"]
+}

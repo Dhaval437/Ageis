@@ -22,7 +22,7 @@ A Windows desktop app that lets an AI agent **actually operate the user's PC** �
 | **REMEMBER.md** | This. Identity, invariants, decisions, glossary | Every session, first |
 | **ARCHITECTURE.md** | Stack, processes, modules, APIs, security design | Before writing any code in a new area |
 | **UI.md** | Every screen, component, state, copy rule | Before touching the renderer |
-| **PROGRESS.md** | The task tracker. 96 numbered tasks across 9 phases | Every session, to pick work and to record it |
+| **PROGRESS.md** | The task tracker. 97 numbered tasks across 9 phases | Every session, to pick work and to record it |
 | **REVIEW.md** | Definition of done + the security gate | Before marking anything `DONE` |
 | **RECOVERY.md** | Undo, crash handling, and dev-session recovery | When something is broken or half-finished |
 
@@ -83,6 +83,9 @@ Append here whenever you make a call that a future session could reasonably ques
 | 2026-09-07 | Tailwind v4 (CSS-first `@theme`), no `tailwind.config.js` | v4 is the current line, shadcn/ui supports it, and design tokens live in one CSS file instead of two places | Tailwind v3 + JS config |
 | 2026-09-07 | Electron MAIN builds with plain `tsc` to ESM, no bundler | The scaffold needs no bundling; adding electron-vite before there is a window to bundle is premature. Revisit at P0-02 if HMR on MAIN is wanted | electron-vite / esbuild now |
 | 2026-09-07 | `requires-python = ">=3.11,<3.14"` | Target runtime stays 3.11 (packaged interpreter), but the dev machine has only 3.13; the range lets both work. Pin to 3.11 exactly when PyInstaller lands in P7 | Hard-pinning 3.11 and blocking local dev |
+| 2026-09-07 | Preload is `src/preload/bridge.cts`, emitting `bridge.cjs` | A **sandboxed preload cannot be an ES module**, and MAIN is ESM. `.cts` makes `tsc` emit CommonJS for that one file with no bundler and no second config. Deviation from the `bridge.ts` in `ARCHITECTURE.md § 4`; renaming it back silently breaks the window | `sandbox: false` + `.mjs` preload (weaker), or adding a bundler |
+| 2026-09-07 | `src/main/window.ts` and `src/main/tray.ts` added | `ARCHITECTURE.md § 4` lists only index/supervisor/hotkeys/updater/ipc. Window and tray lifecycle are cohesive units that would otherwise bloat `index.ts`; the pure parts (`renderer-entry.ts`, `tray-menu.ts`) are split out so they are testable without an Electron process | One long `index.ts` |
+| 2026-09-07 | Vitest in `apps/desktop`; root `pnpm test` also runs `pytest` | `pnpm test` previously passed while running **zero** tests, so the `REMEMBER.md § 10` / `RECOVERY.md § 6.1` start-of-session gate could never fail. `apps/desktop/tsconfig.json` is now the default project (src + tests) and `tsconfig.build.json` is what emits, so tests are type-checked and linted but never packaged | Leaving TS untested until the renderer needs a runner |
 
 ---
 

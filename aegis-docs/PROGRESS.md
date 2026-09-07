@@ -30,16 +30,16 @@ A task is only `DONE` when it passes the corresponding gate in `REVIEW.md`.
 | | |
 |---|---|
 | **Current phase** | P0 — Foundations |
-| **Current task** | P0-02 — Electron MAIN skeleton (next) |
-| **Last session** | 2026-09-07 — P0-01 monorepo scaffold |
-| **Overall** | 1 / 96 tasks |
+| **Current task** | P0-03 — Renderer skeleton (next) |
+| **Last session** | 2026-09-07 — P0-02 Electron MAIN skeleton |
+| **Overall** | 2 / 97 tasks |
 | **Ship target for v1** | Windows installer, Standard autonomy, fs + input + shell + browser tools |
 
 ### Phase progress
 
 | Phase | Name | Tasks | Done | Status | Exit gate |
 |---|---|---|---|---|---|
-| P0 | Foundations & plumbing | 11 | 1 | 🟨 | App launches, core handshake works, one round-trip |
+| P0 | Foundations & plumbing | 12 | 2 | 🟨 | App launches, core handshake works, one round-trip |
 | P1 | Model layer | 10 | 0 | ⬜ | Chat with any of 3 providers; keys stored in DPAPI |
 | P2 | Perception | 9 | 0 | ⬜ | Agent can describe the screen and list clickable elements |
 | P3 | Actuation + safety spine | 14 | 0 | ⬜ | Agent clicks correctly; kill switch and preemption both < targets |
@@ -56,7 +56,7 @@ A task is only `DONE` when it passes the corresponding gate in `REVIEW.md`.
 | ID | Task | Blocked by | Status | Notes |
 |---|---|---|---|---|
 | P0-01 | Monorepo scaffold: pnpm workspaces, turbo, tsconfig base, ruff/mypy/eslint/prettier configs, `.editorconfig` | — | DONE | 2026-09-07. Layout per `ARCHITECTURE.md § 4`; docs stayed in `aegis-docs/`. `pnpm build` + `pytest` green |
-| P0-02 | Electron MAIN skeleton: window, custom titlebar, tray, single-instance lock | P0-01 | TODO | |
+| P0-02 | Electron MAIN skeleton: window, custom titlebar, tray, single-instance lock | P0-01 | DONE | 2026-09-07. Frameless 1100×720 (min 880×600), tray with status/stop/show-hide/quit, single-instance lock verified. Renderer draws the titlebar in P0-03, so the window is currently drag-less; window controls need P0-04 |
 | P0-03 | Renderer skeleton: Vite + React + Tailwind + shadcn, dark tokens from `UI.md § 2` | P0-01 | TODO | |
 | P0-04 | Preload bridge with the exact 6-namespace surface | P0-02 | TODO | No generic `invoke` passthrough |
 | P0-05 | Python core skeleton: FastAPI app, `/v1/health`, structured logging to file + stdout | P0-01 | TODO | |
@@ -66,6 +66,7 @@ A task is only `DONE` when it passes the corresponding gate in `REVIEW.md`.
 | P0-09 | Renderer event-stream client + Zustand store; UI is a pure function of the stream | P0-08, P0-03 | TODO | |
 | P0-10 | SQLite bootstrap + migration runner + the schema from `ARCHITECTURE.md § 7` | P0-05 | TODO | WAL mode on |
 | P0-11 | Pydantic→TS type generation script wired into `pnpm dev` | P0-05, P0-03 | TODO | CI fails if generated types are stale |
+| P0-12 | Fix the root `clean` script: `rimraf node_modules` deletes the rimraf it is running from, so it always exits 1 half-done | — | TODO | Found during P0-02. Run it and you must `pnpm install` again |
 
 **Gate:** typing in the composer sends a request to the core and a streamed echo renders in the timeline. Kill MAIN → no orphan process.
 
@@ -256,3 +257,4 @@ Append one line per session. Newest at the bottom.
 |---|---|---|---|---|
 | 2026-09-05 | planning | — | Doc set created (ARCHITECTURE, UI, PROGRESS, REVIEW, RECOVERY, REMEMBER) | Start P0-01 |
 | 2026-09-07 | claude-code | P0-01 | Monorepo scaffold: pnpm workspaces + turbo, tsconfig base, apps/desktop (Electron), apps/renderer (Vite+React+Tailwind v4), packages/shared + ui, core/ (ruff + mypy strict + pytest). `pnpm install && pnpm build`, eslint, tsc, ruff, mypy, pytest all green | P0-02 Electron MAIN skeleton |
+| 2026-09-07 | claude-code | P0-02, P0-12 | MAIN skeleton: frameless 1100×720 window, navigation locked down, tray (status / stop / show-hide / quit), single-instance lock. Preload moved to `bridge.cts` so it emits CJS. Vitest added — `pnpm test` ran **zero** tests before and now runs 10 TS + 2 pytest. Launched by hand: one window, second instance exits without spawning, close → 0 orphan processes. Logged P0-12 for the broken root `clean` | P0-03 renderer skeleton |
