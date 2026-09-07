@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+out/
+build/
+release/
+*.tsbuildinfo
+
+# Turbo
+.turbo/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Secrets & local config — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.pfx
+*.p12
+signing/
+
+# Aegis runtime artefacts (local user data, never in the repo)
+*.db
+*.db-wal
+*.db-shm
+logs/
+shadow-store/

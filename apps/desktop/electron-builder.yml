@@ -1,0 +1,31 @@
+# electron-builder configuration — fleshed out in P7.
+# Locked decisions (REMEMBER.md § 4): NSIS, per-user install, no admin required,
+# PyInstaller onedir core bundled as extraResources.
+appId: dev.aegis.app
+productName: Aegis
+copyright: Copyright © 2026 Aegis
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**
+  - '!**/*.map'
+
+# The Python sidecar (PyInstaller onedir) is copied in by scripts/build-core.ps1.
+extraResources:
+  - from: ../../core/dist/aegis-core
+    to: core
+    filter: ['**/*']
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true

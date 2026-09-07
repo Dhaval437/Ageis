@@ -1,0 +1,258 @@
+# PROGRESS.md
+
+> **The single source of truth for what is done, what is next, and who is doing it.**
+> Every agent session **must** update this file before it ends. An unrecorded change is a lost change.
+>
+> Task IDs are permanent. Never renumber. New work gets the next free number in its phase (e.g. `P3-11`).
+
+---
+
+## 0. How to use this file
+
+**At the start of a session**
+1. Read `REMEMBER.md`, then this file's §1 and §2.
+2. Pick the topmost `TODO` task whose blockers are all `DONE`.
+3. Set it to `WIP` with your session date. Only **one** task may be `WIP` at a time per developer.
+
+**At the end of a session (mandatory)**
+1. Set the task to `DONE`, `BLOCKED`, or back to `TODO` with a note.
+2. Append a line to §6 Session Log.
+3. If you made an architectural decision, add it to `REMEMBER.md § Decision Log` — not here.
+4. If you discovered new work, add it as a new task with the next free ID.
+
+**Status values:** `TODO` · `WIP` · `BLOCKED` · `REVIEW` · `DONE` · `CUT`
+A task is only `DONE` when it passes the corresponding gate in `REVIEW.md`.
+
+---
+
+## 1. Snapshot
+
+| | |
+|---|---|
+| **Current phase** | P0 — Foundations |
+| **Current task** | P0-02 — Electron MAIN skeleton (next) |
+| **Last session** | 2026-09-07 — P0-01 monorepo scaffold |
+| **Overall** | 1 / 96 tasks |
+| **Ship target for v1** | Windows installer, Standard autonomy, fs + input + shell + browser tools |
+
+### Phase progress
+
+| Phase | Name | Tasks | Done | Status | Exit gate |
+|---|---|---|---|---|---|
+| P0 | Foundations & plumbing | 11 | 1 | 🟨 | App launches, core handshake works, one round-trip |
+| P1 | Model layer | 10 | 0 | ⬜ | Chat with any of 3 providers; keys stored in DPAPI |
+| P2 | Perception | 9 | 0 | ⬜ | Agent can describe the screen and list clickable elements |
+| P3 | Actuation + safety spine | 14 | 0 | ⬜ | Agent clicks correctly; kill switch and preemption both < targets |
+| P4 | The agent loop | 12 | 0 | ⬜ | 8 of 10 benchmark tasks complete unattended |
+| P5 | Tool families | 13 | 0 | ⬜ | fs / shell / browser all behind Guardian |
+| P6 | Recovery, undo, audit | 9 | 0 | ⬜ | Every destructive op is undoable; log chain verifies |
+| P7 | Packaging & installer | 10 | 0 | ⬜ | Signed `Setup.exe` installs and auto-updates on a clean VM |
+| P8 | Hardening & polish | 8 | 0 | ⬜ | Threat-model tests green; a11y pass; perf targets met |
+
+---
+
+## 2. P0 — Foundations & plumbing
+
+| ID | Task | Blocked by | Status | Notes |
+|---|---|---|---|---|
+| P0-01 | Monorepo scaffold: pnpm workspaces, turbo, tsconfig base, ruff/mypy/eslint/prettier configs, `.editorconfig` | — | DONE | 2026-09-07. Layout per `ARCHITECTURE.md § 4`; docs stayed in `aegis-docs/`. `pnpm build` + `pytest` green |
+| P0-02 | Electron MAIN skeleton: window, custom titlebar, tray, single-instance lock | P0-01 | TODO | |
+| P0-03 | Renderer skeleton: Vite + React + Tailwind + shadcn, dark tokens from `UI.md § 2` | P0-01 | TODO | |
+| P0-04 | Preload bridge with the exact 6-namespace surface | P0-02 | TODO | No generic `invoke` passthrough |
+| P0-05 | Python core skeleton: FastAPI app, `/v1/health`, structured logging to file + stdout | P0-01 | TODO | |
+| P0-06 | **Startup handshake**: ephemeral port, token over stdin pipe, stdout JSON line, peer-PID check | P0-02, P0-05 | TODO | The 6 steps in `ARCHITECTURE.md § 3.1`, all of them |
+| P0-07 | Supervisor: spawn, health-check, 3-strike respawn, kill core when MAIN exits | P0-06 | TODO | Test: kill MAIN → core gone in ≤2 s |
+| P0-08 | WebSocket event hub + `seq` replay from memory (SQLite replay lands in P6) | P0-05 | TODO | |
+| P0-09 | Renderer event-stream client + Zustand store; UI is a pure function of the stream | P0-08, P0-03 | TODO | |
+| P0-10 | SQLite bootstrap + migration runner + the schema from `ARCHITECTURE.md § 7` | P0-05 | TODO | WAL mode on |
+| P0-11 | Pydantic→TS type generation script wired into `pnpm dev` | P0-05, P0-03 | TODO | CI fails if generated types are stale |
+
+**Gate:** typing in the composer sends a request to the core and a streamed echo renders in the timeline. Kill MAIN → no orphan process.
+
+---
+
+## 3. P1 — Model layer
+
+| ID | Task | Blocked by | Status | Notes |
+|---|---|---|---|---|
+| P1-01 | `ModelProvider` protocol + `ChatRequest`/`ChatDelta`/`Capabilities` schemas | P0-05 | TODO | |
+| P1-02 | `openai` adapter (streaming, tool calls, vision, configurable base URL) | P1-01 | TODO | The workhorse — 5 providers reuse it |
+| P1-03 | `anthropic` adapter | P1-01 | TODO | |
+| P1-04 | `google` adapter | P1-01 | TODO | |
+| P1-05 | `nvidia`, `openrouter`, `custom` as base-URL configs over `openai` | P1-02 | TODO | Do **not** fork the client |
+| P1-06 | `ollama` adapter + auto-detect on `localhost:11434` | P1-01 | TODO | Privacy story; must work fully offline |
+| P1-07 | Key vault on DPAPI via `keyring`; never argv/logs/renderer; masked display | P0-05 | TODO | Security-gated (`REVIEW.md § 5`) |
+| P1-08 | Router: role map (Planner/Grounder/Utility), fallback chain, capability gate | P1-02..P1-06 | TODO | |
+| P1-09 | Budget guard: per-task + per-day ceilings, live cost events | P1-08 | TODO | Pause on breach, never continue |
+| P1-10 | Models screen (`UI.md § 8.4`): role cards, provider cards, Test button, spend meter | P1-08, P0-09 | TODO | |
+
+**Gate:** user pastes a key for any supported provider, hits Test, sees a real completion; a killed primary falls back to the secondary; keys survive an app restart and never appear in any log.
+
+---
+
+## 4. P2 — Perception
+
+| ID | Task | Blocked by | Status | Notes |
+|---|---|---|---|---|
+| P2-01 | Per-monitor DPI awareness + a virtual-desktop coordinate model | P0-05 | TODO | Get this wrong and every click is wrong |
+| P2-02 | `screen.capture()` via `mss`: monitor / window / region, WebP encode | P2-01 | TODO | < 150 ms |
+| P2-03 | `uia_tree.walk()`: foreground window → element list with role/name/value/bbox | P2-01 | TODO | |
+| P2-04 | Tree pruning + relevance ranking, cap 200 elements | P2-03 | TODO | Biggest quality lever in the whole app |
+| P2-05 | **`redact.py`**: password fields + secrets-regex → black boxes in image bytes, values stripped from tree | P2-02, P2-03 | TODO | Security-gated. Test must fail the build if bypassed |
+| P2-06 | Set-of-mark renderer: numbered overlays on candidate elements | P2-04, P2-02 | TODO | |
+| P2-07 | OCR fallback (Windows OCR via winrt, Tesseract fallback) | P2-02 | TODO | For canvas apps with no tree |
+| P2-08 | `grounding.resolve(element_id) -> point`, re-verified against a fresh capture | P2-04 | TODO | |
+| P2-09 | Perceptual hash on observations (feeds the stuck detector) | P2-02 | TODO | |
+
+**Gate:** on a live Explorer window the core returns a correct element list, a marked screenshot, and grounding for a named button — with a password field on screen fully black-boxed.
+
+---
+
+## 5. P3 — Actuation + safety spine
+
+> **This is the phase that decides whether the product is trustworthy. Do not compress it.**
+
+| ID | Task | Blocked by | Status | Notes |
+|---|---|---|---|---|
+| P3-01 | `SendInput` wrapper: move, click, double, right, drag, scroll, type (unicode), key combos | P2-01 | TODO | Own ctypes code, not PyAutoGUI |
+| P3-02 | Signature tagging: every synthetic event carries `dwExtraInfo = AEGIS_SIGNATURE` | P3-01 | TODO | Prerequisite for P3-04 |
+| P3-03 | Human-like motion (bezier path, small jitter, sane dwell) | P3-01 | TODO | Improves reliability in apps with hover states |
+| P3-04 | **Low-level hooks** `WH_MOUSE_LL` / `WH_KEYBOARD_LL`, ignoring signed events | P3-02 | TODO | Security-gated |
+| P3-05 | **Preemption**: real input → abort in-flight action, release all held modifiers, PAUSED_BY_USER | P3-04 | TODO | Must measure < 100 ms; a stuck Ctrl key is a P0 bug |
+| P3-06 | **Kill switch**: global hotkey in MAIN → hard stop, release keys, kill job children, freeze | P0-02, P3-05 | TODO | Must work when the core is hung |
+| P3-07 | Watchdog: MAIN pings core 1/s; 2 misses while running → kill core | P0-07 | TODO | |
+| P3-08 | Guardian core: `evaluate()`, tier model, `rules.yaml` loader | P0-05 | TODO | |
+| P3-09 | FORBIDDEN list compiled in, not editable from UI, with unit tests per entry | P3-08 | TODO | Security-gated |
+| P3-10 | Scope model: named scopes, path normalisation (realpath, symlinks, `..`), enforcement | P3-08 | TODO | Security-gated |
+| P3-11 | Approvals: request/resolve API, timeout auto-**deny**, `allow_always` with scoping | P3-08, P0-08 | TODO | |
+| P3-12 | `ApprovalDialog` component to `UI.md § 5` spec incl. 200 ms input guard and Deny-default focus | P3-11, P0-09 | TODO | |
+| P3-13 | `OverlayHUD` window: click-through, cursor-avoidance, pause/stop, amber approval state | P0-02, P0-09 | TODO | |
+| P3-14 | Preemption + kill-switch UX (`UI.md § 7`): edge flash, "You took over", Resume-with-a-note | P3-05, P3-06, P3-13 | TODO | |
+
+**Gate:** with a task running, (a) moving the physical mouse pauses the agent in < 100 ms with no stuck keys, (b) the hotkey stops everything in < 200 ms even with the core deliberately hung, (c) a scripted attempt to write into `C:\Windows` is denied and logged, (d) an approval left untouched for 30 s denies itself.
+
+---
+
+## 6. P4 — The agent loop
+
+| ID | Task | Blocked by | Status | Notes |
+|---|---|---|---|---|
+| P4-01 | Tool registry: name, schema, risk, `undo()`, `describe()` — all five enforced by test | P3-08 | TODO | |
+| P4-02 | Loop skeleton: perceive → plan → propose → guardian → execute → observe | P4-01, P2-*, P3-* | TODO | One action per turn, no batching |
+| P4-03 | System prompt + tool-schema serialisation per provider | P1-08, P4-01 | TODO | Keep prompts in versioned files, not inline strings |
+| P4-04 | Context assembly (`ARCHITECTURE.md § 6.2`) with `UTILITY`-model step compression | P1-08 | TODO | One image per call, max |
+| P4-05 | Verification step: did the expected change occur? | P2-09, P4-02 | TODO | Unverifiable ≠ successful |
+| P4-06 | Stuck detector (3 near-identical observations + unchanged plan) | P2-09, P4-02 | TODO | |
+| P4-07 | Step + cost budgets, graceful stop-and-report | P1-09, P4-02 | TODO | |
+| P4-08 | Cancellation/pause/resume plumbed through every phase and long action | P4-02 | TODO | |
+| P4-09 | Mid-run instruction injection (`POST /tasks/{id}/message`) | P4-02 | TODO | Pairs with P3-14 |
+| P4-10 | `ask_user`, `finish`, `give_up`, `remember_fact` task tools + the `facts` table | P4-01 | TODO | |
+| P4-11 | `StepCard`, `TimelineList`, `LiveView` to `UI.md § 4.2/4.3` | P0-09 | TODO | Streaming thought text |
+| P4-12 | **Benchmark suite**: 10 scripted real tasks with pass criteria, runnable headlessly | P4-02 | TODO | This is how we measure "is it actually good" |
+
+**Gate:** ≥ 8/10 benchmark tasks complete without human help under Standard autonomy; every run has a full, replayable timeline.
+
+---
+
+## 7. P5 — Tool families
+
+| ID | Task | Blocked by | Status | Notes |
+|---|---|---|---|---|
+| P5-01 | `screen`: observe, wait_for, read_text | P2-* | TODO | |
+| P5-02 | `input`: click, double, right, drag, type_text, press_keys, scroll | P3-01 | TODO | |
+| P5-03 | `window`: list, focus, move_resize, close | P2-03 | TODO | |
+| P5-04 | `app`: launch (allowlisted + user-approved), is_running | P3-08 | TODO | |
+| P5-05 | `fs` read family: list_dir, read_file (text + pdf/docx extraction) | P3-10 | TODO | Scope-enforced |
+| P5-06 | `fs` write family: write, move, copy, mkdir, zip/unzip | P3-10, P6-01 | TODO | Journalled before execution |
+| P5-07 | `fs.delete` → shadow copy to Aegis trash, never a real delete | P6-02 | TODO | Security-gated |
+| P5-08 | `shell.run_powershell` in a low-integrity child, scrubbed env, hard timeout, output cap | P3-08 | TODO | Security-gated. Always DANGEROUS |
+| P5-09 | Command classifier: block the destructive-verb list before it reaches PowerShell | P5-08 | TODO | Defence in depth, not the only defence |
+| P5-10 | `browser`: Playwright with a dedicated profile — open, goto, find, click, extract | P3-08 | TODO | Never reuse the user's real Chrome profile |
+| P5-11 | `browser.fill_web` — DANGEROUS tier, never fills password/payment fields | P5-10 | TODO | Security-gated |
+| P5-12 | `clipboard` read/write with redaction on read | P2-05 | TODO | |
+| P5-13 | Egress allowlist enforcement for the whole core process | P3-08 | TODO | Security-gated |
+
+**Gate:** each tool has params validation, a risk tier, an `undo()` or an explicit `undoable = False`, a `describe()` string a non-technical person understands, and a test proving Guardian blocks its out-of-scope form.
+
+---
+
+## 8. P6 — Recovery, undo, audit
+
+| ID | Task | Blocked by | Status | Notes |
+|---|---|---|---|---|
+| P6-01 | Action journal: write intent + undo payload **before** execution | P4-01 | TODO | |
+| P6-02 | Shadow-copy store (`%LOCALAPPDATA%\Aegis\trash`) with retention + size cap | P6-01 | TODO | |
+| P6-03 | `undo(journal_id)` and `undo_last_n` incl. compound file operations | P6-01, P6-02 | TODO | |
+| P6-04 | Hash-chained audit log + `aegis verify-log` | P0-10 | TODO | Security-gated |
+| P6-05 | Crash-safe task state: resume or cleanly abandon on restart | P0-10 | TODO | Per `RECOVERY.md § 3` |
+| P6-06 | Event replay from SQLite on WS reconnect (`?since=seq`) | P0-08, P0-10 | TODO | |
+| P6-07 | VSS restore point before high-risk batches (best-effort, non-blocking) | P5-06 | TODO | |
+| P6-08 | Signed task report export (`.zip`: steps, screenshots, audit slice) | P6-04 | TODO | |
+| P6-09 | Logs screen + `Verify log integrity` button (`UI.md § 8.5`) | P6-04, P0-09 | TODO | |
+
+**Gate:** kill the app mid-task → restart shows the correct state and offers undo; a manually edited audit row makes verification fail.
+
+---
+
+## 9. P7 — Packaging & installer
+
+| ID | Task | Blocked by | Status | Notes |
+|---|---|---|---|---|
+| P7-01 | `build-core.ps1`: PyInstaller onedir, hidden imports resolved, size audit | P0-05 | TODO | onedir, **not** onefile |
+| P7-02 | electron-builder config: NSIS, per-user, no admin, shortcuts, extraResources | P7-01 | TODO | |
+| P7-03 | Code signing (`sign.ps1`) for exe, sidecar, installer | P7-02 | TODO | Blocks release |
+| P7-04 | Auto-update via electron-updater + static feed + signature verification | P7-03 | TODO | |
+| P7-05 | Clean-VM install test matrix: Win 10 22H2 + Win 11, fresh user, no Python, no Node | P7-02 | TODO | Must pass before every release |
+| P7-06 | Uninstaller: remove app, offer keep-or-delete for user data | P7-02 | TODO | |
+| P7-07 | First-run wizard (`UI.md § 8.7`) including the practise-the-kill-switch step | P3-14 | TODO | |
+| P7-08 | Portable `.zip` build | P7-02 | TODO | |
+| P7-09 | AV/SmartScreen false-positive submissions to Microsoft + major vendors | P7-03 | TODO | **Start this early — it takes weeks** |
+| P7-10 | Licensing scaffold: Ed25519 offline verify, `features.enabled()` gates returning True | P0-05 | TODO | No billing in v1 |
+
+**Gate:** a fresh Windows VM with nothing installed runs `Setup.exe`, completes the wizard, finishes a real task, and takes an auto-update — with no SmartScreen warning.
+
+---
+
+## 10. P8 — Hardening & polish
+
+| ID | Task | Blocked by | Status | Notes |
+|---|---|---|---|---|
+| P8-01 | Prompt-injection test suite: screens/pages that try to hijack the agent | P4-02 | TODO | Row 1 of the threat model |
+| P8-02 | Injection mitigation: observation text framed as untrusted; echoed params escalate to `confirm` | P8-01 | TODO | Security-gated |
+| P8-03 | Full threat-model test pass (`ARCHITECTURE.md § 8.6`, one test per row) | P8-02 | TODO | |
+| P8-04 | Performance pass against every target in `ARCHITECTURE.md § 13` | P7-05 | TODO | |
+| P8-05 | Accessibility pass: keyboard-only run, contrast audit, screen-reader check | P4-11 | TODO | |
+| P8-06 | Error-state pass: every row of `UI.md § 9` implemented and screenshot-tested | P4-11 | TODO | |
+| P8-07 | Docs: README, user guide, security whitepaper (the sales asset), privacy statement | P7-05 | TODO | |
+| P8-08 | Beta with 10 real users; triage log; ship-or-fix decision | P8-03..P8-07 | TODO | |
+
+**Gate:** no open security-gated issue; all perf targets met; 10 beta users, zero data-loss incidents.
+
+---
+
+## 11. Parallelisation guide
+
+If more than one agent/session is working at once, these tracks barely touch:
+
+- **Track A (core/agent):** P1 → P2 → P4 → P5
+- **Track B (safety):** P3-04 … P3-11 → P6 → P8-01..03
+- **Track C (UI):** P0-03, P0-09 → P3-12/13/14 → P4-11 → P8-05/06
+- **Track D (release):** P7-01..P7-09 — can start as soon as P0 is done; **start P7-09 in week one**
+
+Shared files that need care: `tools/registry.py`, `server/schemas.py`, `packages/shared/src/api.ts`.
+
+---
+
+## 12. Session log
+
+Append one line per session. Newest at the bottom.
+
+```
+| Date | Session/agent | Tasks touched | Outcome | Next |
+|------|---------------|---------------|---------|------|
+```
+
+| Date | Session | Tasks touched | Outcome | Next |
+|---|---|---|---|---|
+| 2026-09-05 | planning | — | Doc set created (ARCHITECTURE, UI, PROGRESS, REVIEW, RECOVERY, REMEMBER) | Start P0-01 |
+| 2026-09-07 | claude-code | P0-01 | Monorepo scaffold: pnpm workspaces + turbo, tsconfig base, apps/desktop (Electron), apps/renderer (Vite+React+Tailwind v4), packages/shared + ui, core/ (ruff + mypy strict + pytest). `pnpm install && pnpm build`, eslint, tsc, ruff, mypy, pytest all green | P0-02 Electron MAIN skeleton |

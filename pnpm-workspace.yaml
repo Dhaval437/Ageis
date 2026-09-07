@@ -1,0 +1,8 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# pnpm 12 build-script allowlist. Only these packages may run install scripts.
+allowBuilds:
+  electron: true
+  esbuild: true

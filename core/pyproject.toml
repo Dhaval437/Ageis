@@ -1,0 +1,91 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aegis-core"
+version = "0.0.0"
+description = "AEGIS agent core — the Python sidecar that perceives, plans, and acts."
+readme = "README.md"
+# Target runtime is Python 3.11 (REMEMBER.md § 4). The upper bound keeps local
+# dev on a version the packaged interpreter can also run.
+requires-python = ">=3.11,<3.14"
+license = { text = "UNLICENSED" }
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.18",
+  "pytest>=8.4",
+  "pytest-asyncio>=1.2",
+  "ruff>=0.14",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["aegis_core"]
+
+# ---------------------------------------------------------------------------
+# ruff — lint + format
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["aegis_core", "tests"]
+extend-exclude = ["build", "dist", ".venv"]
+
+[tool.ruff.lint]
+select = [
+  "E",    # pycodestyle errors
+  "W",    # pycodestyle warnings
+  "F",    # pyflakes
+  "I",    # isort
+  "N",    # pep8-naming
+  "UP",   # pyupgrade
+  "B",    # flake8-bugbear
+  "A",    # flake8-builtins
+  "C4",   # flake8-comprehensions
+  "DTZ",  # flake8-datetimez
+  "PTH",  # flake8-use-pathlib
+  "RUF",  # ruff-specific
+  "S",    # flake8-bandit
+  "SIM",  # flake8-simplify
+  "TID",  # flake8-tidy-imports
+  "ANN",  # flake8-annotations
+]
+ignore = [
+  "ANN401",  # Any is occasionally unavoidable at ctypes boundaries
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # assert is the point of a test
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+[tool.ruff.format]
+quote-style = "double"
+docstring-code-format = true
+
+# ---------------------------------------------------------------------------
+# mypy — strict, no exceptions
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+files = ["aegis_core", "tests"]
+strict = true
+warn_unreachable = true
+warn_unused_configs = true
+disallow_any_unimported = true
+show_error_codes = true
+pretty = true
+exclude = ['^\.venv/']
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+asyncio_mode = "auto"
+filterwarnings = ["error"]

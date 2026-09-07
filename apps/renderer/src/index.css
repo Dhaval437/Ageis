@@ -1,0 +1,31 @@
+@import 'tailwindcss';
+
+/*
+ * Dark-first design tokens live here. The real palette comes from
+ * `aegis-docs/UI.md § 2` and is wired up in P0-03 — this file only proves the
+ * Tailwind pipeline is connected.
+ */
+@theme {
+  --color-aegis-bg: #0b0d10;
+  --color-aegis-fg: #e6e8eb;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-aegis-bg);
+  color: var(--color-aegis-fg);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    'Segoe UI',
+    -apple-system,
+    'Helvetica Neue',
+    Arial,
+    sans-serif;
+}

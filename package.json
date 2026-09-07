@@ -1,0 +1,38 @@
+{
+  "name": "aegis",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AEGIS \u2014 the computer-use agent you can actually trust with your machine.",
+  "packageManager": "pnpm@12.3.4",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "clean": "turbo run clean && rimraf node_modules",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "py:lint": "cd core && .venv\\Scripts\\python.exe -m ruff check .",
+    "py:format": "cd core && .venv\\Scripts\\python.exe -m ruff format .",
+    "py:typecheck": "cd core && .venv\\Scripts\\python.exe -m mypy .",
+    "py:test": "cd core && .venv\\Scripts\\python.exe -m pytest",
+    "py:check": "pnpm py:lint && pnpm py:typecheck && pnpm py:test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "eslint": "^9.39.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.5.0",
+    "prettier": "^3.6.2",
+    "rimraf": "^6.0.1",
+    "turbo": "^2.5.10",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.47.0"
+  }
+}
