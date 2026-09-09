@@ -1,0 +1,130 @@
+/**
+ * The preload bridge contract — the complete surface the renderer can reach
+ * (`ARCHITECTURE.md § 9.3`).
+ *
+ * Hand-written on purpose, and the one exception to the "never hand-write a TS
+ * type" rule in `ARCHITECTURE.md § 4`: none of this mirrors a Pydantic model.
+ * Everything here is owned by the Electron MAIN process — windows, hotkeys,
+ * updates, the shell — or is a deliberately opaque envelope around something
+ * the core owns. Anything that *is* a core model stays `unknown` here and gets
+ * its real type from the generated `./api.ts` when P0-11 lands.
+ *
+ * **Adding a member to `AegisBridge` is a security review item** (`REVIEW.md
+ * § 5`). The renderer displays text the agent scraped off the user's screen, so
+ * it is treated as a hostile caller: every method below is explicitly
+ * enumerated, explicitly validated in MAIN, and there is no generic `invoke`.
+ */
+
+/** Why a bridge call did not succeed. Never a stack trace, never a raw path. */
+export type BridgeErrorCode =
+  /** The subsystem behind this call is not running yet (core down, feature unbuilt). */
+  | 'unavailable'
+  /** The renderer sent something malformed. Always a bug in the renderer. */
+  | 'invalid_request'
+  /** The path is outside everything the user has granted. */
+  | 'not_granted'
+  /** The operation ran and failed. */
+  | 'failed';
+
+export interface BridgeError {
+  readonly code: BridgeErrorCode;
+  readonly message: string;
+}
+
+/**
+ * Bridge calls resolve, they do not reject: an `Error` thrown across
+ * `contextBridge` arrives at the renderer as a bare string with its structure
+ * gone, which makes "the core is not up yet" indistinguishable from "the user
+ * denied it". Every failure is a value.
+ */
+export type BridgeResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: BridgeError };
+
+/** Undoes a `subscribe`/`on*` registration. Always call it from a cleanup path. */
+export type Unsubscribe = () => void;
+
+export type CoreMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
+
+/**
+ * A request against the core's REST API (`ARCHITECTURE.md § 9.1`).
+ *
+ * The renderer supplies a **path**, never a URL: the origin, the port and the
+ * session token are added in MAIN. That is the whole point of proxying — a
+ * renderer that could name its own host could exfiltrate the session token.
+ */
+export interface CoreRequest {
+  readonly method: CoreMethod;
+  /** Rooted at the core's `/v1` prefix, e.g. `/health` or `/tasks/abc/steps`. */
+  readonly path: string;
+  readonly body?: unknown;
+}
+
+export interface CoreResponse {
+  readonly status: number;
+  /** Parsed JSON. Typed by the caller against the generated `./api.ts`. */
+  readonly body: unknown;
+}
+
+/** Global shortcuts, owned by MAIN so a hung core cannot disable them. */
+export interface HotkeyMap {
+  /** Electron accelerator for the kill switch (`REMEMBER.md` invariant 2). */
+  readonly killSwitch: string;
+}
+
+export interface UpdateStatus {
+  readonly state: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error';
+  /** The version being offered, when one is. */
+  readonly version: string | null;
+  /** Human-readable detail for the Settings screen. */
+  readonly message: string | null;
+}
+
+/**
+ * `window.aegis`. Six namespaces, nothing else.
+ */
+export interface AegisBridge {
+  readonly core: {
+    /** Proxied to the core over `127.0.0.1`; MAIN adds the bearer token. */
+    request(request: CoreRequest): Promise<BridgeResult<CoreResponse>>;
+    /**
+     * The live event stream (`ARCHITECTURE.md § 9.2`). Events arrive as
+     * `unknown` until P0-11 generates their types; the store validates them.
+     */
+    subscribe(listener: (event: unknown) => void): Unsubscribe;
+  };
+
+  readonly window: {
+    minimize(): void;
+    close(): void;
+    /** Shows or hides the `OverlayHUD` window (P3-13). */
+    setOverlay(visible: boolean): Promise<BridgeResult<null>>;
+  };
+
+  readonly hotkeys: {
+    get(): Promise<BridgeResult<HotkeyMap>>;
+    /** Resolves with the map actually in force, which may differ if a binding was rejected. */
+    set(hotkeys: HotkeyMap): Promise<BridgeResult<HotkeyMap>>;
+  };
+
+  readonly system: {
+    /** Opens the OS folder picker. Resolves `null` if the user cancelled. */
+    pickFolder(): Promise<BridgeResult<string | null>>;
+    /** Opens a path with its default handler. Only paths the user has granted. */
+    openPath(path: string): Promise<BridgeResult<null>>;
+    /** Reveals a path in Explorer with the item selected. Only paths the user has granted. */
+    revealInExplorer(path: string): Promise<BridgeResult<null>>;
+  };
+
+  readonly updates: {
+    check(): Promise<BridgeResult<UpdateStatus>>;
+    install(): Promise<BridgeResult<null>>;
+    onStatus(listener: (status: UpdateStatus) => void): Unsubscribe;
+  };
+
+  readonly app: {
+    version(): Promise<string>;
+    logsPath(): Promise<string>;
+    onDeepLink(listener: (url: string) => void): Unsubscribe;
+  };
+}

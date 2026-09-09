@@ -9,5 +9,11 @@
 
 export * from './api.js';
 
+/**
+ * The preload bridge contract. Hand-written and MAIN-owned, not generated —
+ * see the note at the top of `./bridge.ts`.
+ */
+export * from './bridge.js';
+
 /** Placeholder until P0-11 generates the real surface. */
 export const SHARED_PACKAGE_NAME = '@aegis/shared';
