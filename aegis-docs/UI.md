@@ -35,9 +35,32 @@
 --forbidden   #B14CFF   blocked-by-policy (deliberately not red — it reads as "impossible", not "failed")
 ```
 
+The light theme keeps every role and every meaning; only the values change. Each
+value clears 4.5:1 against its own surface, so no role is quieter in one theme
+than the other.
+
+```
+--bg          #F7F8FA
+--surface-1   #FFFFFF
+--surface-2   #F0F2F5
+--border      #D8DDE5
+--text        #11151B
+--text-dim    #5B6472
+--accent      #2563EB
+--safe        #0E8A55
+--caution     #A96500   darkened amber — the bright one fails contrast on white (§10)
+--danger      #D02525
+--forbidden   #7A2ECC
+```
+
+Both palettes are declared as their own block in `apps/renderer/src/index.css`;
+dark is the default, the OS preference picks light, and `data-theme` on `<html>`
+overrides the OS in either direction. `tokens.test.ts` fails the build if a
+token is dropped, renamed, or defined for only one theme.
+
 Risk tier colour is used **consistently and only** for risk: a `--danger` element always means an irreversible action, never just "delete this chat".
 
-**Type:** Inter (UI) / JetBrains Mono (code, paths, commands). Scale 12 / 13 / 14 / 16 / 20 / 28. Body 14/1.5.
+**Type:** Inter (UI) / JetBrains Mono (code, paths, commands) — not bundled yet (`PROGRESS.md P0-14`), so both stacks currently fall through to the Windows system faces rather than to a webfont request. Scale 12 / 13 / 14 / 16 / 20 / 28. Body 14/1.5.
 **Spacing:** 4px base; 8/12/16/24 the common steps. **Radius:** 8px cards, 6px controls, 999px pills.
 **Motion:** 120 ms ease-out for state, 200 ms for panels. Respect `prefers-reduced-motion`. Nothing animates during an approval dialog — a moving dialog is a dialog people misclick.
 **Iconography:** Lucide, 16/20px, 1.5 stroke.

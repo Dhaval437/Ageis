@@ -30,16 +30,16 @@ A task is only `DONE` when it passes the corresponding gate in `REVIEW.md`.
 | | |
 |---|---|
 | **Current phase** | P0 — Foundations |
-| **Current task** | P0-03 — Renderer skeleton (next) |
-| **Last session** | 2026-09-07 — P0-02 Electron MAIN skeleton |
-| **Overall** | 2 / 97 tasks |
+| **Current task** | P0-04 — Preload bridge (next) |
+| **Last session** | 2026-09-09 — P0-03 Renderer skeleton |
+| **Overall** | 3 / 99 tasks |
 | **Ship target for v1** | Windows installer, Standard autonomy, fs + input + shell + browser tools |
 
 ### Phase progress
 
 | Phase | Name | Tasks | Done | Status | Exit gate |
 |---|---|---|---|---|---|
-| P0 | Foundations & plumbing | 12 | 2 | 🟨 | App launches, core handshake works, one round-trip |
+| P0 | Foundations & plumbing | 14 | 3 | 🟨 | App launches, core handshake works, one round-trip |
 | P1 | Model layer | 10 | 0 | ⬜ | Chat with any of 3 providers; keys stored in DPAPI |
 | P2 | Perception | 9 | 0 | ⬜ | Agent can describe the screen and list clickable elements |
 | P3 | Actuation + safety spine | 14 | 0 | ⬜ | Agent clicks correctly; kill switch and preemption both < targets |
@@ -57,7 +57,7 @@ A task is only `DONE` when it passes the corresponding gate in `REVIEW.md`.
 |---|---|---|---|---|
 | P0-01 | Monorepo scaffold: pnpm workspaces, turbo, tsconfig base, ruff/mypy/eslint/prettier configs, `.editorconfig` | — | DONE | 2026-09-07. Layout per `ARCHITECTURE.md § 4`; docs stayed in `aegis-docs/`. `pnpm build` + `pytest` green |
 | P0-02 | Electron MAIN skeleton: window, custom titlebar, tray, single-instance lock | P0-01 | DONE | 2026-09-07. Frameless 1100×720 (min 880×600), tray with status/stop/show-hide/quit, single-instance lock verified. Renderer draws the titlebar in P0-03, so the window is currently drag-less; window controls need P0-04 |
-| P0-03 | Renderer skeleton: Vite + React + Tailwind + shadcn, dark tokens from `UI.md § 2` | P0-01 | TODO | |
+| P0-03 | Renderer skeleton: Vite + React + Tailwind + shadcn, dark tokens from `UI.md § 2` | P0-01 | DONE | 2026-09-09. Both palettes wired (light derived — see Decision Log), stock Tailwind scales cleared so off-token classes don't compile, shadcn foundation (`components.json`, `cn`, `Button`), `AppShell` to the `UI.md § 4` layout. Vitest + RTL added; 35 renderer tests |
 | P0-04 | Preload bridge with the exact 6-namespace surface | P0-02 | TODO | No generic `invoke` passthrough |
 | P0-05 | Python core skeleton: FastAPI app, `/v1/health`, structured logging to file + stdout | P0-01 | TODO | |
 | P0-06 | **Startup handshake**: ephemeral port, token over stdin pipe, stdout JSON line, peer-PID check | P0-02, P0-05 | TODO | The 6 steps in `ARCHITECTURE.md § 3.1`, all of them |
@@ -67,6 +67,8 @@ A task is only `DONE` when it passes the corresponding gate in `REVIEW.md`.
 | P0-10 | SQLite bootstrap + migration runner + the schema from `ARCHITECTURE.md § 7` | P0-05 | TODO | WAL mode on |
 | P0-11 | Pydantic→TS type generation script wired into `pnpm dev` | P0-05, P0-03 | TODO | CI fails if generated types are stale |
 | P0-12 | Fix the root `clean` script: `rimraf node_modules` deletes the rimraf it is running from, so it always exits 1 half-done | — | TODO | Found during P0-02. Run it and you must `pnpm install` again |
+| P0-13 | Storybook for the renderer, with the four required stories per component | P0-03 | TODO | Found during P0-03. `REVIEW.md § 3` demands default/loading/empty/error stories, and the `UI.md § 12` inventory starts landing at P3-12 — this must exist before it does |
+| P0-14 | Bundle Inter + JetBrains Mono as local `woff2` and self-host them | P0-03 | TODO | Found during P0-03. `UI.md § 2` names both; the app must render correctly offline, so no webfont CDN — the CSP has no `font-src` beyond `'self'` for that reason |
 
 **Gate:** typing in the composer sends a request to the core and a streamed echo renders in the timeline. Kill MAIN → no orphan process.
 
@@ -258,3 +260,4 @@ Append one line per session. Newest at the bottom.
 | 2026-09-05 | planning | — | Doc set created (ARCHITECTURE, UI, PROGRESS, REVIEW, RECOVERY, REMEMBER) | Start P0-01 |
 | 2026-09-07 | claude-code | P0-01 | Monorepo scaffold: pnpm workspaces + turbo, tsconfig base, apps/desktop (Electron), apps/renderer (Vite+React+Tailwind v4), packages/shared + ui, core/ (ruff + mypy strict + pytest). `pnpm install && pnpm build`, eslint, tsc, ruff, mypy, pytest all green | P0-02 Electron MAIN skeleton |
 | 2026-09-07 | claude-code | P0-02, P0-12 | MAIN skeleton: frameless 1100×720 window, navigation locked down, tray (status / stop / show-hide / quit), single-instance lock. Preload moved to `bridge.cts` so it emits CJS. Vitest added — `pnpm test` ran **zero** tests before and now runs 10 TS + 2 pytest. Launched by hand: one window, second instance exits without spawning, close → 0 orphan processes. Logged P0-12 for the broken root `clean` | P0-03 renderer skeleton |
+| 2026-09-09 | claude-code | P0-03, P0-13, P0-14 | Renderer skeleton: both `UI.md § 2` palettes as explicit blocks (dark default, OS picks light, `data-theme` overrides) with the light values derived and contrast-checked; Tailwind's stock colour/size/radius scales cleared so an off-token class no longer compiles; shadcn foundation (`components.json`, `cn` over `extendTailwindMerge`, `Button`); `AppShell` to the `UI.md § 4` layout — 44px titlebar with a drag region, 64px rail, 360px live view, full-width composer disabled with "Connect a model to get started." Vitest + RTL wired into `apps/renderer` (35 tests, incl. one that fails if a token is dropped or defined for only one theme). Built app launched by hand: layout matches the sketch, rail switches sections, close → 0 orphan processes. Logged P0-13 (Storybook) and P0-14 (bundle the fonts) | P0-04 preload bridge |

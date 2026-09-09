@@ -1,31 +1,165 @@
 @import 'tailwindcss';
 
+/* ---------------------------------------------------------------------------
+ * Design tokens — the single source of truth is `aegis-docs/UI.md § 2`.
+ *
+ * Both themes are defined as explicit blocks; no colour exists only inside a
+ * media query. Dark is the default (dark-first), light wins when the OS asks
+ * for it, and an explicit `data-theme` on <html> overrides the OS in either
+ * direction. The Settings toggle (`UI.md § 8.6`) sets that attribute.
+ * ------------------------------------------------------------------------- */
+
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #0b0d10;
+  --surface-1: #12151a;
+  --surface-2: #191d24;
+  --border: #252b34;
+  --text: #e6eaf0;
+  --text-dim: #8a94a6;
+  --accent: #4c8dff;
+  --safe: #3dd68c;
+  --caution: #f5b547;
+  --danger: #ff5c5c;
+  --forbidden: #b14cff;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    color-scheme: light;
+    --bg: #f7f8fa;
+    --surface-1: #ffffff;
+    --surface-2: #f0f2f5;
+    --border: #d8dde5;
+    --text: #11151b;
+    --text-dim: #5b6472;
+    --accent: #2563eb;
+    --safe: #0e8a55;
+    --caution: #a96500;
+    --danger: #d02525;
+    --forbidden: #7a2ecc;
+  }
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f7f8fa;
+  --surface-1: #ffffff;
+  --surface-2: #f0f2f5;
+  --border: #d8dde5;
+  --text: #11151b;
+  --text-dim: #5b6472;
+  --accent: #2563eb;
+  --safe: #0e8a55;
+  --caution: #a96500;
+  --danger: #d02525;
+  --forbidden: #7a2ecc;
+}
+
 /*
- * Dark-first design tokens live here. The real palette comes from
- * `aegis-docs/UI.md § 2` and is wired up in P0-03 — this file only proves the
- * Tailwind pipeline is connected.
+ * Off-scale values are unreachable on purpose: an off-token colour or a 15px
+ * font is a `REVIEW.md § 3` failure, so the namespaces are cleared before the
+ * AEGIS scale is declared and Tailwind simply generates no utility for them.
  */
 @theme {
-  --color-aegis-bg: #0b0d10;
-  --color-aegis-fg: #e6e8eb;
+  --color-*: initial;
+  --text-*: initial;
+  --radius-*: initial;
+  --font-*: initial;
 }
 
-html,
-body,
-#root {
-  height: 100%;
+@theme inline {
+  --color-transparent: transparent;
+  --color-current: currentColor;
+
+  --color-bg: var(--bg);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-text-dim: var(--text-dim);
+  --color-accent: var(--accent);
+  --color-safe: var(--safe);
+  --color-caution: var(--caution);
+  --color-danger: var(--danger);
+  --color-forbidden: var(--forbidden);
+
+  /* Type scale: 12 / 13 / 14 / 16 / 20 / 28, body 14/1.5. */
+  --text-xs: 12px;
+  --text-xs--line-height: 1.4;
+  --text-sm: 13px;
+  --text-sm--line-height: 1.4;
+  --text-base: 14px;
+  --text-base--line-height: 1.5;
+  --text-md: 16px;
+  --text-md--line-height: 1.5;
+  --text-lg: 20px;
+  --text-lg--line-height: 1.4;
+  --text-xl: 28px;
+  --text-xl--line-height: 1.25;
+
+  --radius-card: 8px;
+  --radius-control: 6px;
+  --radius-pill: 999px;
+
+  /*
+   * Inter / JetBrains Mono are not bundled yet (P0-14) — until they are, these
+   * stacks fall through to the Windows system faces rather than to a webfont
+   * request, because the renderer must work with no network.
+   */
+  --font-sans:
+    'Inter', ui-sans-serif, system-ui, 'Segoe UI Variable Text', 'Segoe UI', Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
 }
 
-body {
-  margin: 0;
-  background-color: var(--color-aegis-bg);
-  color: var(--color-aegis-fg);
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    'Segoe UI',
-    -apple-system,
-    'Helvetica Neue',
-    Arial,
-    sans-serif;
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* `UI.md § 10`: 2px accent ring, 2px offset, never removed. */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* `UI.md § 10`: reduced motion drops every non-essential transition. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer utilities {
+  /*
+   * Frameless window drag regions (`UI.md § 4.1`). Electron-specific, so they
+   * live here rather than in a component: `no-drag` must be applied to every
+   * interactive element inside a drag region or it becomes unclickable.
+   */
+  .app-drag {
+    -webkit-app-region: drag;
+  }
+
+  .app-no-drag {
+    -webkit-app-region: no-drag;
+  }
 }
