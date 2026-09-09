@@ -11,10 +11,15 @@ readme = "README.md"
 # dev on a version the packaged interpreter can also run.
 requires-python = ">=3.11,<3.14"
 license = { text = "UNLICENSED" }
-dependencies = []
+dependencies = [
+  "fastapi>=0.119",
+  "pydantic>=2.12",
+  "uvicorn>=0.38",
+]
 
 [project.optional-dependencies]
 dev = [
+  "httpx2>=2.0",     # starlette's TestClient transport (it deprecated httpx 0.x)
   "mypy>=1.18",
   "pytest>=8.4",
   "pytest-asyncio>=1.2",
@@ -91,4 +96,9 @@ minversion = "8.0"
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 asyncio_mode = "auto"
-filterwarnings = ["error"]
+filterwarnings = [
+  "error",
+  # Raised by starlette's own TestClient module against anyio. Not our call site;
+  # drop this line once starlette stops importing the deprecated alias.
+  "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+]
