@@ -36,20 +36,20 @@ Then the tool runs. Then `applied = true`. **Journal first, act second** — a c
 
 ### 2.2 Undo payloads by operation
 
-| Operation | Undo strategy |
-|---|---|
-| `fs.write_file` (existing file) | Copy the original to the shadow store first; undo = restore it |
-| `fs.write_file` (new file) | Undo = delete the created file |
-| `fs.move` / `fs.rename` | Undo = move back (verify the destination is still what we put there) |
-| `fs.copy` | Undo = delete the copy |
-| `fs.delete` | **Never a real delete.** Move to `%LOCALAPPDATA%\Aegis\trash\<task>\<uuid>\` preserving relative path; undo = move back |
-| `fs.mkdir` | Undo = remove if still empty |
-| `clipboard.write` | Save previous clipboard content; undo = restore |
-| `input.type_text` into a field | Best-effort: record the field's prior value from the UIA tree; undo = re-select-all and retype the old value. **Marked "best effort", never "guaranteed"** |
-| `window.close` | Not undoable → `undoable = False`, and the approval says so |
-| `app.launch` | Undo = close the process we started (only that PID) |
-| `shell.run_powershell` | **Not undoable.** Always DANGEROUS, always approved, always preceded by a restore point if the scope is large |
-| `browser.fill_web` / form submit | Not undoable once submitted → the approval must say "this cannot be undone" |
+| Operation                          | Undo strategy                                                                                                                                                   |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fs.write_file` (existing file)  | Copy the original to the shadow store first; undo = restore it                                                                                                  |
+| `fs.write_file` (new file)       | Undo = delete the created file                                                                                                                                  |
+| `fs.move` / `fs.rename`        | Undo = move back (verify the destination is still what we put there)                                                                                            |
+| `fs.copy`                        | Undo = delete the copy                                                                                                                                          |
+| `fs.delete`                      | **Never a real delete.** Move to `%LOCALAPPDATA%\Aegis\trash\<task>\<uuid>\` preserving relative path; undo = move back                                 |
+| `fs.mkdir`                       | Undo = remove if still empty                                                                                                                                    |
+| `clipboard.write`                | Save previous clipboard content; undo = restore                                                                                                                 |
+| `input.type_text` into a field   | Best-effort: record the field's prior value from the UIA tree; undo = re-select-all and retype the old value.**Marked "best effort", never "guaranteed"** |
+| `window.close`                   | Not undoable →`undoable = False`, and the approval says so                                                                                                   |
+| `app.launch`                     | Undo = close the process we started (only that PID)                                                                                                             |
+| `shell.run_powershell`           | **Not undoable.** Always DANGEROUS, always approved, always preceded by a restore point if the scope is large                                             |
+| `browser.fill_web` / form submit | Not undoable once submitted → the approval must say "this cannot be undone"                                                                                    |
 
 ### 2.3 Compound undo
 
@@ -96,16 +96,16 @@ State transitions are committed to SQLite **before** the corresponding side effe
 
 ### 3.3 Mid-task disruptions that are not crashes
 
-| Event | Behaviour |
-|---|---|
-| Machine locks / screensaver | Pause immediately. Perception is meaningless on a lock screen and clicks would land unpredictably. Resume prompt on unlock. |
-| Sleep / hibernate | Pause on the resume-from-sleep event, re-observe before continuing. |
-| User logs out | Core exits cleanly, task → `ABANDONED`. |
-| RDP / session switch | Treat as lock. |
-| Display configuration change (monitor added/removed/resolution change) | Invalidate the coordinate cache, force a fresh observation, log it. Never reuse a pre-change bounding box. |
-| Target window closed by the user | Current step fails with a clear error; the agent re-plans rather than clicking where the window used to be. |
-| Network loss (cloud model) | Retry with backoff (3 attempts), then fall back per the router chain, then pause and tell the user. |
-| Model returns garbage / unparseable tool call | Retry once with a repair prompt; second failure → fail the step and surface it. |
+| Event                                                                  | Behaviour                                                                                                                   |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Machine locks / screensaver                                            | Pause immediately. Perception is meaningless on a lock screen and clicks would land unpredictably. Resume prompt on unlock. |
+| Sleep / hibernate                                                      | Pause on the resume-from-sleep event, re-observe before continuing.                                                         |
+| User logs out                                                          | Core exits cleanly, task →`ABANDONED`.                                                                                   |
+| RDP / session switch                                                   | Treat as lock.                                                                                                              |
+| Display configuration change (monitor added/removed/resolution change) | Invalidate the coordinate cache, force a fresh observation, log it. Never reuse a pre-change bounding box.                  |
+| Target window closed by the user                                       | Current step fails with a clear error; the agent re-plans rather than clicking where the window used to be.                 |
+| Network loss (cloud model)                                             | Retry with backoff (3 attempts), then fall back per the router chain, then pause and tell the user.                         |
+| Model returns garbage / unparseable tool call                          | Retry once with a repair prompt; second failure → fail the step and surface it.                                            |
 
 ---
 
@@ -140,13 +140,13 @@ Detected by MAIN via health-check failure, broken pipe, or watchdog timeout.
 
 ## 5. Data recovery
 
-| Asset | Protection |
-|---|---|
-| `aegis.db` | WAL mode; automatic backup copy on every app start (keep last 5); integrity check on open; corrupt DB → rename to `aegis.db.corrupt-<ts>`, start fresh, tell the user where the old one is |
-| API keys | In Windows Credential Manager, independent of the DB — a DB reset never loses them |
-| Screenshots | On disk, referenced by path; a missing file degrades the timeline gracefully ("screenshot unavailable"), it never crashes the view |
-| Audit log | Hash-chained; a break is *reported*, never silently repaired |
-| Settings | JSON blob in the DB **plus** a mirrored `settings.backup.json`; restore offered if the DB is reset |
+| Asset        | Protection                                                                                                                                                                                   |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `aegis.db` | WAL mode; automatic backup copy on every app start (keep last 5); integrity check on open; corrupt DB → rename to`aegis.db.corrupt-<ts>`, start fresh, tell the user where the old one is |
+| API keys     | In Windows Credential Manager, independent of the DB — a DB reset never loses them                                                                                                          |
+| Screenshots  | On disk, referenced by path; a missing file degrades the timeline gracefully ("screenshot unavailable"), it never crashes the view                                                           |
+| Audit log    | Hash-chained; a break is*reported*, never silently repaired                                                                                                                                |
+| Settings     | JSON blob in the DB**plus** a mirrored `settings.backup.json`; restore offered if the DB is reset                                                                                    |
 
 **Export before destruction, always.** Anything in the app that resets or deletes user data first offers an export.
 
@@ -157,29 +157,36 @@ Detected by MAIN via health-check failure, broken pipe, or watchdog timeout.
 This section is for a Claude Code session that gets interrupted, confused, or inherits a half-finished state.
 
 ### 6.1 Starting cold
+
 1. Read `REMEMBER.md` in full. It is short and it is the map.
 2. Read `PROGRESS.md § 1` and `§ 12` (session log). The last log line tells you where the previous session actually stopped — trust it over your own inference.
 3. Run `pnpm install && pnpm build && pnpm test` before touching anything. If the tree is already broken, **fixing the build is your task**, regardless of what `PROGRESS.md` says is next.
 4. Only then pick up a task.
 
 ### 6.2 Finding a task marked `WIP` from a previous session
+
 Assume it is **incomplete and possibly wrong**. Do not build on it blindly:
+
 1. Read the diff of the last commits touching that area.
 2. Run its tests specifically.
 3. Either finish it (and note in the session log that you inherited it) or revert it to a clean state and restart it. Do not leave a third partial layer on top of two others.
 
 ### 6.3 When the build is broken and you don't know why
+
 1. `git stash` your changes, confirm `main` builds. If it doesn't, the breakage predates you — fix that first and say so in the session log.
 2. Bisect by phase: core alone (`pytest`), then UI alone (`pnpm --filter renderer test`), then the handshake.
 3. The three usual suspects, in order: stale generated types (`pnpm gen:types`), a stale PyInstaller build in `resources/core/`, a leftover core process holding the DB lock (`Get-Process aegis-core | Stop-Process`).
 
 ### 6.4 When you are unsure about a design decision
+
 Do **not** invent one silently. In order:
+
 1. Check `REMEMBER.md § Decision Log` — it may already be decided.
 2. Check `ARCHITECTURE.md` — the answer is probably there.
 3. If genuinely undecided: pick the option that is **more conservative about permissions and more reversible**, implement it, and record it in the Decision Log with the reasoning and the alternative you rejected. A recorded decision you can revisit beats an unrecorded one you can't find.
 
 ### 6.5 Rules for never losing work
+
 - Commit at every green test, with a message naming the task ID: `P3-05: preemption releases held modifiers`.
 - Never leave the session without updating `PROGRESS.md`. This is the recovery mechanism for the whole project.
 - Never `git push --force` to `main`.

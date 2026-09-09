@@ -31,8 +31,8 @@ A task is only `DONE` when it passes the corresponding gate in `REVIEW.md`.
 |---|---|
 | **Current phase** | P0 — Foundations |
 | **Current task** | P0-04 — Preload bridge (next) |
-| **Last session** | 2026-09-09 — P0-03 Renderer skeleton |
-| **Overall** | 3 / 99 tasks |
+| **Last session** | 2026-09-09 — P3-04 / P3-05 Preemption |
+| **Overall** | 5 / 99 tasks |
 | **Ship target for v1** | Windows installer, Standard autonomy, fs + input + shell + browser tools |
 
 ### Phase progress
@@ -42,7 +42,7 @@ A task is only `DONE` when it passes the corresponding gate in `REVIEW.md`.
 | P0 | Foundations & plumbing | 14 | 3 | 🟨 | App launches, core handshake works, one round-trip |
 | P1 | Model layer | 10 | 0 | ⬜ | Chat with any of 3 providers; keys stored in DPAPI |
 | P2 | Perception | 9 | 0 | ⬜ | Agent can describe the screen and list clickable elements |
-| P3 | Actuation + safety spine | 14 | 0 | ⬜ | Agent clicks correctly; kill switch and preemption both < targets |
+| P3 | Actuation + safety spine | 14 | 2 | 🟨 | Agent clicks correctly; kill switch and preemption both < targets |
 | P4 | The agent loop | 12 | 0 | ⬜ | 8 of 10 benchmark tasks complete unattended |
 | P5 | Tool families | 13 | 0 | ⬜ | fs / shell / browser all behind Guardian |
 | P6 | Recovery, undo, audit | 9 | 0 | ⬜ | Every destructive op is undoable; log chain verifies |
@@ -117,11 +117,11 @@ A task is only `DONE` when it passes the corresponding gate in `REVIEW.md`.
 
 | ID | Task | Blocked by | Status | Notes |
 |---|---|---|---|---|
-| P3-01 | `SendInput` wrapper: move, click, double, right, drag, scroll, type (unicode), key combos | P2-01 | TODO | Own ctypes code, not PyAutoGUI |
-| P3-02 | Signature tagging: every synthetic event carries `dwExtraInfo = AEGIS_SIGNATURE` | P3-01 | TODO | Prerequisite for P3-04 |
+| P3-01 | `SendInput` wrapper: move, click, double, right, drag, scroll, type (unicode), key combos | P2-01 | WIP | Partly landed with P3-04: `actuation/win32.py` + `SendInputBackend` cover relative move, buttons, drag, scroll, unicode typing, combos. **Still owed:** absolute/DPI-aware `move_to` (needs P2-01) and the full VK table |
+| P3-02 | Signature tagging: every synthetic event carries `dwExtraInfo = AEGIS_SIGNATURE` | P3-01 | DONE | 2026-09-09. `actuation/signature.py` + `SendInputBackend`, which is the only caller of `SendInput`. Landed early because P3-04 is meaningless without it |
 | P3-03 | Human-like motion (bezier path, small jitter, sane dwell) | P3-01 | TODO | Improves reliability in apps with hover states |
-| P3-04 | **Low-level hooks** `WH_MOUSE_LL` / `WH_KEYBOARD_LL`, ignoring signed events | P3-02 | TODO | Security-gated |
-| P3-05 | **Preemption**: real input → abort in-flight action, release all held modifiers, PAUSED_BY_USER | P3-04 | TODO | Must measure < 100 ms; a stuck Ctrl key is a P0 bug |
+| P3-04 | **Low-level hooks** `WH_MOUSE_LL` / `WH_KEYBOARD_LL`, ignoring signed events | P3-02 | DONE | 2026-09-09. `actuation/preempt.py`: dedicated thread, hooks + message loop, no I/O in the callback. Measured 1.06 ms median from injection to signal set (budget 5 ms) |
+| P3-05 | **Preemption**: real input → abort in-flight action, release all held modifiers, PAUSED_BY_USER | P3-04 | DONE | 2026-09-09. Abort + full modifier release measured at **6.3 ms median / 9.3 ms worst** over 10 runs (budget 100 ms). `PAUSED_BY_USER` itself is the listener seam — the task state machine arrives with P4 |
 | P3-06 | **Kill switch**: global hotkey in MAIN → hard stop, release keys, kill job children, freeze | P0-02, P3-05 | TODO | Must work when the core is hung |
 | P3-07 | Watchdog: MAIN pings core 1/s; 2 misses while running → kill core | P0-07 | TODO | |
 | P3-08 | Guardian core: `evaluate()`, tier model, `rules.yaml` loader | P0-05 | TODO | |
@@ -261,3 +261,4 @@ Append one line per session. Newest at the bottom.
 | 2026-09-07 | claude-code | P0-01 | Monorepo scaffold: pnpm workspaces + turbo, tsconfig base, apps/desktop (Electron), apps/renderer (Vite+React+Tailwind v4), packages/shared + ui, core/ (ruff + mypy strict + pytest). `pnpm install && pnpm build`, eslint, tsc, ruff, mypy, pytest all green | P0-02 Electron MAIN skeleton |
 | 2026-09-07 | claude-code | P0-02, P0-12 | MAIN skeleton: frameless 1100×720 window, navigation locked down, tray (status / stop / show-hide / quit), single-instance lock. Preload moved to `bridge.cts` so it emits CJS. Vitest added — `pnpm test` ran **zero** tests before and now runs 10 TS + 2 pytest. Launched by hand: one window, second instance exits without spawning, close → 0 orphan processes. Logged P0-12 for the broken root `clean` | P0-03 renderer skeleton |
 | 2026-09-09 | claude-code | P0-03, P0-13, P0-14 | Renderer skeleton: both `UI.md § 2` palettes as explicit blocks (dark default, OS picks light, `data-theme` overrides) with the light values derived and contrast-checked; Tailwind's stock colour/size/radius scales cleared so an off-token class no longer compiles; shadcn foundation (`components.json`, `cn` over `extendTailwindMerge`, `Button`); `AppShell` to the `UI.md § 4` layout — 44px titlebar with a drag region, 64px rail, 360px live view, full-width composer disabled with "Connect a model to get started." Vitest + RTL wired into `apps/renderer` (35 tests, incl. one that fails if a token is dropped or defined for only one theme). Built app launched by hand: layout matches the sketch, rail switches sections, close → 0 orphan processes. Logged P0-13 (Storybook) and P0-14 (bundle the fonts) | P0-04 preload bridge |
+| 2026-09-09 | claude-code | P3-04, P3-05, P3-02, part of P3-01 | Preemption spine. `actuation/win32.py` (ctypes bindings), `signature.py` (`AEGIS_SIGNATURE`), `input.py` (`SendInputBackend` — the only `SendInput` caller — plus `InputController` with a held-key registry and abort-aware pacing), `preempt.py` (`PreemptSignal` + `InputMonitor`: both LL hooks on one thread that does no I/O). 30 new tests. Measured on this machine: hook callback sets the signal in **1.06 ms median / 3.5 ms worst** (n=25); real keystroke → action aborted → all eight modifiers released in **6.3 ms median / 9.3 ms worst** (n=10). Suite run 5× consecutively, no flakes | P3-06 kill switch |

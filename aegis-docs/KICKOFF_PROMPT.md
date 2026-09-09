@@ -153,13 +153,13 @@ build reproducible.
 
 ## Step 4 — What to do when a session goes sideways
 
-| Symptom | Prompt |
-|---|---|
-| Claude Code starts refactoring things you didn't ask about | `Stop. Revert anything outside task <ID>. Re-read CLAUDE.md rule 1.` |
-| It marks something DONE that isn't | `Re-read REVIEW.md section 1. Walk the checklist out loud against your change, then set the correct status.` |
-| Build is broken and you don't know why | `Read docs/RECOVERY.md section 6.3 and follow it.` |
-| You come back after a week | `Read docs/RECOVERY.md section 6.1 and follow it, then tell me where the project actually stands.` |
-| It wants to add a dependency | `Justify it against ARCHITECTURE.md section 2. If it's a new core dependency, add a Decision Log row first.` |
+| Symptom                                                    | Prompt                                                                                                         |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Claude Code starts refactoring things you didn't ask about | `Stop. Revert anything outside task <ID>. Re-read CLAUDE.md rule 1.`                                         |
+| It marks something DONE that isn't                         | `Re-read REVIEW.md section 1. Walk the checklist out loud against your change, then set the correct status.` |
+| Build is broken and you don't know why                     | `Read docs/RECOVERY.md section 6.3 and follow it.`                                                           |
+| You come back after a week                                 | `Read docs/RECOVERY.md section 6.1 and follow it, then tell me where the project actually stands.`           |
+| It wants to add a dependency                               | `Justify it against ARCHITECTURE.md section 2. If it's a new core dependency, add a Decision Log row first.` |
 
 ---
 

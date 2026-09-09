@@ -58,6 +58,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]  # assert is the point of a test
+# Win32 struct and field names are the ABI. Renaming them to satisfy pep8-naming
+# would silently break the mapping, so this one file keeps Microsoft's spelling.
+"aegis_core/actuation/win32.py" = ["N801", "N806", "N815", "N816"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "parents"
