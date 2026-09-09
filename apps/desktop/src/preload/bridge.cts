@@ -97,8 +97,7 @@ const bridge: AegisBridge = {
   },
 
   app: {
-    version: async (): Promise<string> =>
-      (await ipcRenderer.invoke('aegis:app:version')) as string,
+    version: async (): Promise<string> => (await ipcRenderer.invoke('aegis:app:version')) as string,
     logsPath: async (): Promise<string> =>
       (await ipcRenderer.invoke('aegis:app:logs-path')) as string,
     onDeepLink: (listener: (url: string) => void): Unsubscribe =>

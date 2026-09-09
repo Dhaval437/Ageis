@@ -62,13 +62,13 @@ export type GrantCheck =
 
 export interface PathGrants {
   /** Records a root the user chose. Silently ignores a path that cannot be resolved. */
-  grantRoot(path: string): Promise<void>;
+  readonly grantRoot: (path: string) => Promise<void>;
   /** Resolves a path and confirms it sits inside a granted root. */
-  check(path: string): Promise<GrantCheck>;
+  readonly check: (path: string) => Promise<GrantCheck>;
   /** As `check`, and additionally refuses anything that executes when opened. */
-  checkOpenable(path: string): Promise<GrantCheck>;
+  readonly checkOpenable: (path: string) => Promise<GrantCheck>;
   /** The granted roots, resolved. For diagnostics and tests. */
-  roots(): readonly string[];
+  readonly roots: () => readonly string[];
 }
 
 export function createPathGrants(realpath: Realpath): PathGrants {

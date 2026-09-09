@@ -371,6 +371,20 @@ window.aegis = {
 
 Nothing else. Adding a function here is a security review item (`REVIEW.md § 5`).
 
+The typed contract lives in `packages/shared/src/bridge.ts` (`AegisBridge`) — the
+one hand-written TS type allowed by the §4 rule, because none of it mirrors a
+Pydantic model. Three things hold across the whole surface:
+
+- **The renderer names a path, never a URL.** `core.request` takes a path rooted
+  at `/v1`; the origin, port and bearer token are added in MAIN.
+- **Calls resolve a `BridgeResult`, they never reject** — `{ok: true, value}` or
+  `{ok: false, error: {code, message}}`, where `code` is `unavailable` /
+  `invalid_request` / `not_granted` / `failed`. Structure survives the bridge;
+  a thrown `Error` would not.
+- **Every argument is validated in MAIN**, in `main/bridge-handlers.ts`, before
+  it reaches any service. The renderer is a hostile caller: it displays text the
+  agent scraped off the user's screen.
+
 ---
 
 ## 10. Autonomy levels (user-facing setting)

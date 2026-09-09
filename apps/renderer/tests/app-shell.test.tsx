@@ -1,6 +1,17 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '@/components/AppShell';
+
+/**
+ * The preload injects `window.aegis` before any renderer code runs. jsdom has
+ * no preload, so the two methods the shell actually calls are stubbed here.
+ */
+const windowBridge = { minimize: vi.fn(), close: vi.fn() };
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.stubGlobal('aegis', { window: windowBridge });
+});
 
 describe('AppShell', () => {
   it('renders the six rail destinations from UI.md § 4', () => {
@@ -36,5 +47,23 @@ describe('AppShell', () => {
     const titlebar = container.querySelector('header');
     expect(titlebar).toHaveClass('app-drag');
     expect(titlebar?.querySelectorAll('.app-no-drag').length).toBeGreaterThan(0);
+  });
+
+  it('drives the window controls through the preload bridge', () => {
+    render(<AppShell />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Minimise' }));
+    expect(windowBridge.minimize).toHaveBeenCalledOnce();
+    expect(windowBridge.close).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(windowBridge.close).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the window controls out of the drag region, or they cannot be clicked', () => {
+    render(<AppShell />);
+    for (const name of ['Minimise', 'Close']) {
+      expect(screen.getByRole('button', { name }).closest('.app-no-drag'), name).not.toBeNull();
+    }
   });
 });

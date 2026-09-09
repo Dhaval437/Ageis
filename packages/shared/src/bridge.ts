@@ -38,8 +38,7 @@ export interface BridgeError {
  * denied it". Every failure is a value.
  */
 export type BridgeResult<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: BridgeError };
+  { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: BridgeError };
 
 /** Undoes a `subscribe`/`on*` registration. Always call it from a cleanup path. */
 export type Unsubscribe = () => void;

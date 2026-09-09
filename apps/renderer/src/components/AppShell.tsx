@@ -3,9 +3,11 @@ import {
   Cpu,
   History,
   ListTodo,
+  Minus,
   ScrollText,
   Settings,
   Shield,
+  X,
   type LucideIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -16,8 +18,8 @@ import { cn } from '@/lib/utils';
  * conversation column, 360px live view, composer.
  *
  * This is the skeleton (P0-03). Every region is still static: the timeline, the
- * live view and the composer become functions of the event stream in P0-09, and
- * the window controls need the preload bridge from P0-04.
+ * live view and the composer become functions of the event stream in P0-09.
+ * The window controls are live as of P0-04.
  */
 
 interface Section {
@@ -77,8 +79,42 @@ function Titlebar(): ReactElement {
           Scope: none
         </span>
         <span className="app-no-drag rounded-pill border border-border px-2.5 py-1">Standard</span>
+        <WindowControls />
       </div>
     </header>
+  );
+}
+
+/**
+ * The `– ×` of the `UI.md § 4.1` sketch. Maximise is missing on purpose: the
+ * bridge surface in `ARCHITECTURE.md § 9.3` has `minimize` and `close` and
+ * nothing else, and widening it is a `REVIEW.md § 5` item, so it is tracked as
+ * P0-15 rather than smuggled in here.
+ */
+function WindowControls(): ReactElement {
+  return (
+    <div className="app-no-drag ml-1 flex items-center">
+      <button
+        type="button"
+        aria-label="Minimise"
+        onClick={() => {
+          window.aegis.window.minimize();
+        }}
+        className="flex size-7 items-center justify-center rounded-control text-text-dim transition-colors duration-120 ease-out hover:bg-surface-2 hover:text-text"
+      >
+        <Minus className="size-4" aria-hidden />
+      </button>
+      <button
+        type="button"
+        aria-label="Close"
+        onClick={() => {
+          window.aegis.window.close();
+        }}
+        className="flex size-7 items-center justify-center rounded-control text-text-dim transition-colors duration-120 ease-out hover:bg-surface-2 hover:text-danger"
+      >
+        <X className="size-4" aria-hidden />
+      </button>
+    </div>
   );
 }
 

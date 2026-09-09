@@ -5,9 +5,10 @@
  * working when everything else is wedged: the kill-switch hotkey (REMEMBER.md
  * invariant 2) and the supervision of the Python core (invariant 14).
  *
- * P0-02 scope: window, frameless shell for the custom titlebar, tray, and the
- * single-instance lock. The preload surface is P0-04, the core supervisor is
- * P0-06/P0-07, and the real kill switch is P3-06.
+ * Landed so far: window, frameless shell for the custom titlebar, tray, the
+ * single-instance lock (P0-02) and the preload bridge (P0-04). The core
+ * supervisor is P0-06/P0-07 and the real kill switch is P3-06 — the bridge
+ * namespaces those back are registered and answer `unavailable` until then.
  */
 
 import { app } from 'electron';
@@ -15,12 +16,14 @@ import type { BrowserWindow } from 'electron';
 import { createMainWindow } from './window.js';
 import { createTray, type TrayHandle } from './tray.js';
 import type { TrayMenuState } from './tray-menu.js';
+import { registerBridgeIpc, type BridgeIpc } from './ipc.js';
 
 /** Must match `appId` in `electron-builder.yml` or Windows gives us a second taskbar identity. */
 const APP_USER_MODEL_ID = 'dev.aegis.app';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: TrayHandle | null = null;
+let bridge: BridgeIpc | null = null;
 let trayState: TrayMenuState = { windowVisible: false, taskRunning: false };
 
 function setTrayState(patch: Partial<TrayMenuState>): void {
@@ -88,11 +91,28 @@ function bootstrap(): void {
   app.on('before-quit', () => {
     tray?.destroy();
     tray = null;
+    bridge?.dispose();
+    bridge = null;
   });
 
   app
     .whenReady()
     .then(() => {
+      // Registered before the window exists, so the renderer cannot call a
+      // channel that is not there yet during its first paint.
+      bridge = registerBridgeIpc({
+        getWindow: () => mainWindow,
+        // The OverlayHUD window is P3-13; the core gateway is P0-06; hotkeys
+        // are P3-06 and updates are P7-04. Until each lands its namespace
+        // answers `unavailable` rather than silently doing nothing.
+        setOverlay: null,
+        rest: {
+          core: () => null,
+          hotkeys: () => null,
+          updates: () => null,
+        },
+      });
+
       openMainWindow();
       tray = createTray(trayState, {
         toggleWindow: toggleMainWindow,

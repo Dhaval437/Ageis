@@ -7,7 +7,13 @@
     "noEmit": true,
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "types": ["node"]
+    "types": ["node"],
+    // Off for this package only. `src/preload/bridge.cts` *must* be CommonJS
+    // (a sandboxed preload cannot be an ES module), and `verbatimModuleSyntax`
+    // forbids `import`/`export` syntax in a CommonJS file — leaving only
+    // `import x = require(...)`, which no test runner can intercept, so the
+    // preload surface would become untestable. `isolatedModules` stays on.
+    "verbatimModuleSyntax": false
   },
   "include": ["src", "tests"]
 }

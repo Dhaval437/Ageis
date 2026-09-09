@@ -177,6 +177,25 @@ Assume it is **incomplete and possibly wrong**. Do not build on it blindly:
 2. Bisect by phase: core alone (`pytest`), then UI alone (`pnpm --filter renderer test`), then the handshake.
 3. The three usual suspects, in order: stale generated types (`pnpm gen:types`), a stale PyInstaller build in `resources/core/`, a leftover core process holding the DB lock (`Get-Process aegis-core | Stop-Process`).
 
+### 6.3.1 "The app won't launch" — check `ELECTRON_RUN_AS_NODE` first
+
+Some editor and agent terminals (VS Code's, and Claude Code's inside it) export
+`ELECTRON_RUN_AS_NODE=1` for their own tooling. Electron inherits it and boots
+as **plain Node**: `require('electron')` then returns the path to the binary
+instead of the module, so `app` is `undefined` and the app dies before any of
+our code runs. The symptom is misleading — a Node module-loader stack trace
+mentioning `cjsPreparseModuleExports`, with nothing of ours in it.
+
+Nothing is broken. Clear the variable and launch again:
+
+```powershell
+Remove-Item Env:\ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+pnpm --filter @aegis/desktop start
+```
+
+Do not "fix" the ESM setup in response to this. It is the environment, not the
+build.
+
 ### 6.4 When you are unsure about a design decision
 
 Do **not** invent one silently. In order:
