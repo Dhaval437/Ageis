@@ -1,4 +1,8 @@
-"""Tests for the FastAPI app and `GET /v1/health` (`ARCHITECTURE.md § 9.1`)."""
+"""Tests for the FastAPI app and `GET /v1/health` (`ARCHITECTURE.md § 9.1`).
+
+Every request here carries the session token; `test_auth.py` owns the cases that
+do not.
+"""
 
 from __future__ import annotations
 
@@ -10,10 +14,18 @@ from aegis_core.server.app import create_app
 from aegis_core.server.schemas import HealthResponse
 from fastapi.testclient import TestClient
 
+from tests.server.test_auth import AUTHORIZED, make_auth
+
+
+def _client() -> TestClient:
+    client = TestClient(create_app(make_auth()))
+    client.headers.update(AUTHORIZED)
+    return client
+
 
 @pytest.fixture
 def client() -> Iterator[TestClient]:
-    with TestClient(create_app()) as test_client:
+    with _client() as test_client:
         yield test_client
 
 
@@ -33,7 +45,7 @@ def test_health_reports_a_growing_uptime(client: TestClient) -> None:
 
 
 def test_each_app_has_its_own_uptime_clock() -> None:
-    with TestClient(create_app()) as first, TestClient(create_app()) as second:
+    with _client() as first, _client() as second:
         assert first.get("/v1/health").json()["uptime"] >= 0
         assert second.get("/v1/health").json()["uptime"] >= 0
 

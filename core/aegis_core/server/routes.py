@@ -1,7 +1,7 @@
 """HTTP routes, all mounted under `/v1` (`ARCHITECTURE.md § 9.1`).
 
-Only `/health` exists so far. Bearer auth and the peer-PID check arrive with the
-handshake in P0-06; until then the app binds loopback and nothing else.
+Only `/health` exists so far. Every route here is behind `SessionAuthMiddleware`
+(bearer token, no `Origin`, peer-PID check) — see `server/auth.py`.
 """
 
 from __future__ import annotations
