@@ -45,11 +45,13 @@ class _Served:
         self.app: FastAPI | None = None
         self.host: str | None = None
         self.port: int | None = None
+        self.supervisor_pid: int | None = None
 
-    def __call__(self, app: FastAPI, sock: socket.socket) -> None:
+    def __call__(self, app: FastAPI, sock: socket.socket, *, supervisor_pid: int) -> None:
         # Read the address here: `main()` closes the socket on its way out.
         self.app = app
         self.host, self.port = sock.getsockname()
+        self.supervisor_pid = supervisor_pid
 
 
 @pytest.fixture
@@ -180,6 +182,12 @@ def test_the_supervisor_pid_can_be_given_explicitly(served: _Served) -> None:
     run(["--supervisor-pid", "1234"])
     assert served.app is not None
     assert _auth_of(served.app).supervisor_pid == 1234
+
+
+def test_the_server_is_told_who_supervises_it(served: _Served) -> None:
+    """The parent watch needs the same PID the auth check uses, or it watches nothing."""
+    run(["--supervisor-pid", "1234"])
+    assert served.supervisor_pid == 1234
 
 
 def test_the_token_is_never_written_to_stdout(served: _Served) -> None:

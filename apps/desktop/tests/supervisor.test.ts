@@ -1,0 +1,346 @@
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { describe, expect, it, vi } from 'vitest';
+import type { CoreGateway } from '../src/main/bridge-handlers.js';
+import type { CoreLaunchSpec } from '../src/main/handshake.js';
+import {
+  createSupervisor,
+  resolveCoreLaunch,
+  type StartCoreFn,
+  type SupervisorState,
+} from '../src/main/supervisor.js';
+
+/**
+ * A stand-in for a live core: real streams (the supervisor drains them), and a
+ * record of how it was killed, because "the core is gone" is the guarantee this
+ * module exists to make.
+ */
+class FakeCore extends EventEmitter {
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  readonly stdin = new PassThrough();
+  readonly kills: string[] = [];
+  exitCode: number | null = null;
+  signalCode: string | null = null;
+
+  kill(signal?: string): boolean {
+    this.kills.push(signal ?? 'SIGTERM');
+    if (signal === 'SIGKILL' || this.kills.length === 1) this.exit(0);
+    return true;
+  }
+
+  /** The core dying on its own — a crash, or someone else's `taskkill`. */
+  exit(code: number): void {
+    if (this.exitCode !== null) return;
+    this.exitCode = code;
+    this.emit('exit', code, null);
+  }
+}
+
+/** A core that never dies when asked, to exercise the SIGKILL escalation. */
+class StubbornCore extends FakeCore {
+  override kill(signal?: string): boolean {
+    this.kills.push(signal ?? 'SIGTERM');
+    if (signal === 'SIGKILL') this.exit(137);
+    return true;
+  }
+}
+
+const SPEC: CoreLaunchSpec = { command: 'aegis-core.exe', args: ['--port', '0'] };
+
+function healthyGateway(status = 200): CoreGateway {
+  return { request: vi.fn(() => Promise.resolve({ status, body: { status: 'ok' } })) };
+}
+
+function unreachableGateway(): CoreGateway {
+  return {
+    request: vi.fn(() => Promise.reject(new Error('Aegis could not reach its core.'))),
+  };
+}
+
+interface Harness {
+  readonly cores: FakeCore[];
+  readonly startCoreFn: StartCoreFn;
+}
+
+/** Hands out one fake core per spawn, so a respawn is visibly a new process. */
+function spawner(make: (index: number) => FakeCore | Error): Harness {
+  const cores: FakeCore[] = [];
+  const startCoreFn: StartCoreFn = () => {
+    const next = make(cores.length);
+    if (next instanceof Error) return Promise.reject(next);
+    cores.push(next);
+    return Promise.resolve({
+      child: next as never,
+      session: {
+        port: 49_000 + cores.length,
+        pid: 4000 + cores.length,
+        version: '0.0.0',
+        // A distinct token per spawn, as a real handshake mints.
+        token: String(cores.length).padStart(64, '0'),
+      },
+    });
+  };
+  return { cores, startCoreFn };
+}
+
+/** Waits for the supervisor to settle on one of the given statuses. */
+async function settleOn(
+  read: () => SupervisorState,
+  statuses: readonly SupervisorState['status'][],
+): Promise<SupervisorState> {
+  for (let tick = 0; tick < 200; tick += 1) {
+    if (statuses.includes(read().status)) return read();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`supervisor stayed ${read().status}`);
+}
+
+describe('resolveCoreLaunch', () => {
+  it('runs the PyInstaller bundle when packaged', () => {
+    const spec = resolveCoreLaunch({
+      isPackaged: true,
+      resourcesPath: 'C:\\Program Files\\Aegis\\resources',
+      projectRoot: 'C:\\repo',
+    });
+    expect(spec.command).toContain('aegis-core.exe');
+    expect(spec.args).toEqual(['--port', '0']);
+  });
+
+  it('runs the venv interpreter from source in development', () => {
+    const spec = resolveCoreLaunch({
+      isPackaged: false,
+      resourcesPath: 'C:\\unused',
+      projectRoot: 'C:\\repo',
+    });
+    expect(spec.command).toContain('.venv');
+    expect(spec.args).toEqual(['-m', 'aegis_core', '--port', '0']);
+    expect(spec.cwd).toContain('core');
+  });
+
+  it('lets an explicit interpreter override both', () => {
+    const spec = resolveCoreLaunch({
+      isPackaged: true,
+      resourcesPath: 'C:\\Program Files\\Aegis\\resources',
+      projectRoot: 'C:\\repo',
+      overrideCommand: 'C:\\python\\python.exe',
+    });
+    expect(spec.command).toBe('C:\\python\\python.exe');
+  });
+
+  it('never passes the port as anything but ephemeral', () => {
+    for (const isPackaged of [true, false]) {
+      const spec = resolveCoreLaunch({ isPackaged, resourcesPath: 'r', projectRoot: 'p' });
+      expect(spec.args).toContain('0');
+      expect(spec.args?.join(' ')).not.toMatch(/--token/);
+    }
+  });
+});
+
+describe('createSupervisor', () => {
+  it('reports running once the core passes its health check', async () => {
+    const { cores, startCoreFn } = spawner(() => new FakeCore());
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: () => healthyGateway(),
+    });
+
+    const state = await supervisor.start();
+
+    expect(state.status).toBe('running');
+    expect(supervisor.gateway()).not.toBeNull();
+    expect(cores[0]?.kills).toEqual([]);
+  });
+
+  it('health-checks `/health`, and only accepts a 200', async () => {
+    const gateway = healthyGateway();
+    const { startCoreFn } = spawner(() => new FakeCore());
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: () => gateway,
+    });
+
+    await supervisor.start();
+
+    expect(gateway.request).toHaveBeenCalledWith({ method: 'GET', path: '/health' });
+  });
+
+  it('kills a core that answered the handshake but fails its health check', async () => {
+    const { cores, startCoreFn } = spawner(() => new FakeCore());
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: unreachableGateway,
+      restartDelayMs: 1,
+    });
+
+    const state = await supervisor.start();
+
+    // A core that does not answer is a core with mouse control and no purpose.
+    expect(cores.every((core) => core.kills.length > 0)).toBe(true);
+    expect(state.status).toBe('unavailable');
+  });
+
+  it('tries three times in the window, then gives up rather than spawning forever', async () => {
+    let spawns = 0;
+    const { cores, startCoreFn } = spawner(() => {
+      spawns += 1;
+      return new Error('spawn ENOENT');
+    });
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: () => healthyGateway(),
+      restartDelayMs: 1,
+    });
+
+    const state = await supervisor.start();
+
+    expect(spawns).toBe(3);
+    expect(cores).toHaveLength(0);
+    expect(state).toMatchObject({ status: 'unavailable', attempts: 3 });
+    expect(state.lastError).toContain('spawn ENOENT');
+  });
+
+  it('respawns a core that dies on its own', async () => {
+    const { cores, startCoreFn } = spawner(() => new FakeCore());
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: () => healthyGateway(),
+      restartDelayMs: 1,
+    });
+    await supervisor.start();
+
+    cores[0]?.exit(1);
+    await settleOn(supervisor.state, ['running']);
+
+    expect(cores).toHaveLength(2);
+    expect(supervisor.gateway()).not.toBeNull();
+  });
+
+  it('has no gateway while the core is down', async () => {
+    const { cores, startCoreFn } = spawner(() => new FakeCore());
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: () => healthyGateway(),
+      restartDelayMs: 50,
+    });
+    await supervisor.start();
+
+    cores[0]?.exit(1);
+
+    // The renderer must see "the core is not there" rather than a request that
+    // goes to a dead process.
+    expect(supervisor.gateway()).toBeNull();
+    expect(supervisor.state().status).toBe('restarting');
+    await supervisor.stop();
+  });
+
+  it('starts a fresh session token per spawn', async () => {
+    const tokens: string[] = [];
+    const { cores, startCoreFn } = spawner(() => new FakeCore());
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: (options) => {
+        tokens.push(options.token);
+        return healthyGateway();
+      },
+      restartDelayMs: 1,
+    });
+    await supervisor.start();
+    cores[0]?.exit(1);
+    await settleOn(supervisor.state, ['running']);
+
+    expect(tokens).toHaveLength(2);
+    await supervisor.stop();
+  });
+
+  it('kills the core on stop and does not restart it', async () => {
+    const { cores, startCoreFn } = spawner(() => new FakeCore());
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: () => healthyGateway(),
+      restartDelayMs: 1,
+    });
+    await supervisor.start();
+
+    await supervisor.stop();
+
+    expect(cores[0]?.kills).toEqual(['SIGTERM']);
+    expect(supervisor.state().status).toBe('stopped');
+    expect(supervisor.gateway()).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(cores).toHaveLength(1);
+  });
+
+  it('escalates to SIGKILL when the core ignores the polite kill', async () => {
+    const { cores, startCoreFn } = spawner(() => new StubbornCore());
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: () => healthyGateway(),
+    });
+    await supervisor.start();
+
+    await supervisor.stop();
+
+    expect(cores[0]?.kills).toEqual(['SIGTERM', 'SIGKILL']);
+  }, 10_000);
+
+  it('kills a core that finished starting after stop was called', async () => {
+    const core = new FakeCore();
+    let release = (): void => {};
+    const spawning = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const startCoreFn: StartCoreFn = async () => {
+      await spawning;
+      return {
+        child: core as never,
+        session: { port: 49_001, pid: 4001, version: '0.0.0', token: 'b'.repeat(64) },
+      };
+    };
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: () => healthyGateway(),
+    });
+
+    const starting = supervisor.start();
+    await supervisor.stop();
+    release();
+    await starting;
+
+    // Invariant 14 again: a core that arrives during shutdown is still a core.
+    expect(core.kills).toEqual(['SIGTERM']);
+    expect(supervisor.gateway()).toBeNull();
+  });
+
+  it('forgets attempts that fall outside the 60 s window', async () => {
+    let clock = 0;
+    let failures = 3;
+    const { startCoreFn } = spawner(() =>
+      failures-- > 0 ? new Error('spawn ENOENT') : new FakeCore(),
+    );
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: () => healthyGateway(),
+      restartDelayMs: 1,
+      now: () => clock,
+    });
+
+    expect((await supervisor.start()).status).toBe('unavailable');
+    clock += 61_000;
+    const state = await supervisor.start();
+
+    expect(state.status).toBe('running');
+    await supervisor.stop();
+  });
+});

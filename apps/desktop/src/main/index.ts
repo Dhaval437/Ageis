@@ -6,17 +6,24 @@
  * invariant 2) and the supervision of the Python core (invariant 14).
  *
  * Landed so far: window, frameless shell for the custom titlebar, tray, the
- * single-instance lock (P0-02) and the preload bridge (P0-04). The core
- * supervisor is P0-06/P0-07 and the real kill switch is P3-06 — the bridge
- * namespaces those back are registered and answer `unavailable` until then.
+ * single-instance lock (P0-02), the preload bridge (P0-04) and the core
+ * supervisor (P0-07). The real kill switch is P3-06 — the bridge namespaces it
+ * backs are registered and answer `unavailable` until then.
  */
 
 import { app } from 'electron';
 import type { BrowserWindow } from 'electron';
+import { join } from 'node:path';
 import { createMainWindow } from './window.js';
 import { createTray, type TrayHandle } from './tray.js';
 import type { TrayMenuState } from './tray-menu.js';
 import { registerBridgeIpc, type BridgeIpc } from './ipc.js';
+import {
+  createSupervisor,
+  resolveCoreLaunch,
+  type Supervisor,
+  type SupervisorState,
+} from './supervisor.js';
 
 /** Must match `appId` in `electron-builder.yml` or Windows gives us a second taskbar identity. */
 const APP_USER_MODEL_ID = 'dev.aegis.app';
@@ -24,6 +31,7 @@ const APP_USER_MODEL_ID = 'dev.aegis.app';
 let mainWindow: BrowserWindow | null = null;
 let tray: TrayHandle | null = null;
 let bridge: BridgeIpc | null = null;
+let supervisor: Supervisor | null = null;
 let trayState: TrayMenuState = { windowVisible: false, taskRunning: false };
 
 function setTrayState(patch: Partial<TrayMenuState>): void {
@@ -93,6 +101,12 @@ function bootstrap(): void {
     tray = null;
     bridge?.dispose();
     bridge = null;
+    // Invariant 14: the core must not outlive the UI. `stop()` is fire-and-
+    // forget here because Electron will not wait for a promise on this event —
+    // it kills the child synchronously and only the confirmation is async. The
+    // core's own parent watch covers the paths MAIN never gets to run.
+    void supervisor?.stop();
+    supervisor = null;
   });
 
   app
@@ -100,20 +114,27 @@ function bootstrap(): void {
     .then(() => {
       // Registered before the window exists, so the renderer cannot call a
       // channel that is not there yet during its first paint.
+      supervisor = createCoreSupervisor();
+
       bridge = registerBridgeIpc({
         getWindow: () => mainWindow,
-        // The OverlayHUD window is P3-13; the core gateway is P0-06; hotkeys
-        // are P3-06 and updates are P7-04. Until each lands its namespace
-        // answers `unavailable` rather than silently doing nothing.
+        // The OverlayHUD window is P3-13; hotkeys are P3-06 and updates are
+        // P7-04. Until each lands its namespace answers `unavailable` rather
+        // than silently doing nothing.
         setOverlay: null,
         rest: {
-          core: () => null,
+          // Null while the core is down, which is how the renderer learns to
+          // show "Reconnecting…" instead of a request that never returns.
+          core: () => supervisor?.gateway() ?? null,
           hotkeys: () => null,
           updates: () => null,
         },
       });
 
       openMainWindow();
+      // Not awaited: the window must paint while the core starts, and the
+      // supervisor reports its own state through `onState`.
+      void supervisor.start();
       tray = createTray(trayState, {
         toggleWindow: toggleMainWindow,
         stopAgent: () => {
@@ -129,6 +150,35 @@ function bootstrap(): void {
       console.error('[main] startup failed', error);
       app.quit();
     });
+}
+
+/**
+ * Build the supervisor for this session.
+ *
+ * `AEGIS_CORE_COMMAND` points the app at an interpreter chosen by hand; without
+ * it, development uses the venv in `core/` and a packaged build uses the
+ * PyInstaller bundle in `resources/`.
+ */
+function createCoreSupervisor(): Supervisor {
+  return createSupervisor({
+    spec: resolveCoreLaunch({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      // `app.getAppPath()` is `apps/desktop` in development; the repo root is
+      // two levels up, and that is where `core/` lives.
+      projectRoot: join(app.getAppPath(), '..', '..'),
+      overrideCommand: process.env['AEGIS_CORE_COMMAND'],
+    }),
+    onState: onSupervisorState,
+  });
+}
+
+function onSupervisorState(state: SupervisorState): void {
+  if (state.status === 'unavailable') {
+    // RECOVERY.md § 4's Engine-unavailable screen is P0-09; until the renderer
+    // can be told, the log is the only place this surfaces.
+    console.error('[main] the core is unavailable:', state.lastError ?? 'unknown reason');
+  }
 }
 
 bootstrap();

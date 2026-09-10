@@ -6,10 +6,11 @@ the FastAPI app on the socket it bound:
 1. Read the 256-bit session token from the **stdin pipe** — never from argv.
 2. Bind `127.0.0.1:<port>`; `0` (the default) asks the OS for an ephemeral one.
 3. Write `{"port","pid","version"}` as one JSON line on stdout, then close stdout.
-4. Serve, rejecting anything that is not MAIN with a bare `401`.
+4. Serve, rejecting anything that is not MAIN with a bare `401`, and watching the
+   supervising process so the core stops within 2 s of MAIN dying (step 6).
 
-Steps 4 and 6 of § 3.1 — the health-check/3-strike respawn and the core exiting when
-MAIN dies — belong to MAIN's supervisor and are P0-07.
+Step 4 of § 3.1 — the health check and the 3-strike respawn — is MAIN's side of the
+supervision and lives in `main/supervisor.ts`.
 """
 
 from __future__ import annotations
@@ -19,15 +20,17 @@ import logging
 import os
 import socket
 import sys
+import threading
 from collections.abc import Sequence
 from pathlib import Path
-from typing import IO
+from typing import IO, Final
 
 import uvicorn
 from fastapi import FastAPI
 
 from aegis_core import __version__
 from aegis_core.logging_setup import configure_logging
+from aegis_core.parent_watch import ParentWatch
 from aegis_core.server.app import create_app
 from aegis_core.server.auth import SessionAuth
 from aegis_core.server.handshake import (
@@ -39,6 +42,13 @@ from aegis_core.server.handshake import (
 )
 
 log = logging.getLogger(__name__)
+
+#: Exit code when the core stopped because its supervisor did.
+EXIT_SUPERVISOR_LOST: Final = 3
+
+#: How long uvicorn gets to unwind before the process ends outright. Together with
+#: the 0.5 s poll interval this keeps the core inside § 3.1 step 6's 2 s budget.
+SHUTDOWN_GRACE_S: Final = 1.0
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -63,16 +73,45 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _serve(app: FastAPI, sock: socket.socket) -> None:
-    """Serve the already-bound socket.
+def _hard_exit() -> None:
+    """End the process now, flushing the logs first.
+
+    Reached only when uvicorn did not stop on its own — a wedged request handler,
+    a stuck shutdown. The core has mouse control and its UI is already gone, so
+    `os._exit` is the correct tool: no atexit hook, no thread, and no in-flight
+    request gets to extend its life.
+    """
+    log.error("core.exit_forced", extra={"reason": "supervisor_lost"})
+    logging.shutdown()
+    os._exit(EXIT_SUPERVISOR_LOST)
+
+
+def _stop_server(server: uvicorn.Server) -> None:
+    """Ask uvicorn to stop, and make sure it does."""
+    server.should_exit = True
+    timer = threading.Timer(SHUTDOWN_GRACE_S, _hard_exit)
+    timer.daemon = True
+    timer.start()
+
+
+def _serve(app: FastAPI, sock: socket.socket, *, supervisor_pid: int) -> None:
+    """Serve the already-bound socket until the server or the supervisor stops.
 
     uvicorn is given the socket rather than a port because the ephemeral port has
     to be announced *before* the server starts. `log_config=None` keeps uvicorn's
     own lines flowing through our handlers — its default config would put a second,
     plain-text copy on stdout, which § 3.1 reserves for the handshake line.
+
+    The parent watch is what makes § 3.1 step 6 true when MAIN dies without being
+    able to clean up after itself.
     """
     server = uvicorn.Server(uvicorn.Config(app, log_config=None))
-    server.run(sockets=[sock])
+    watch = ParentWatch(supervisor_pid, lambda: _stop_server(server))
+    watch.start()
+    try:
+        server.run(sockets=[sock])
+    finally:
+        watch.stop()
 
 
 def main(
@@ -107,7 +146,7 @@ def main(
             sys.stdout = Path(os.devnull).open("w", encoding="utf-8")  # noqa: SIM115
         log.info("core.listening", extra={"port": port, "supervisor_pid": supervisor_pid})
 
-        _serve(app, sock)
+        _serve(app, sock, supervisor_pid=supervisor_pid)
     finally:
         sock.close()
 
