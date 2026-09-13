@@ -401,6 +401,22 @@ Pydantic model. Three things hold across the whole surface:
   it reaches any service. The renderer is a hostile caller: it displays text the
   agent scraped off the user's screen.
 
+**`core.subscribe`** (P0-09). MAIN holds the one WebSocket to `/v1/stream`
+(`main/core-stream.ts`, using `ws`; the token never reaches the renderer), and
+pushes a `CoreStreamMessage` envelope over the `aegis:core:event` channel:
+
+| `kind` | Carries | Renderer does |
+|---|---|---|
+| `event` | one `§ 9.2` event, as `unknown` | validates it (`lib/stream-event.ts`), applies it if `seq` is new |
+| `reset` | nothing | drops everything derived from the stream; a full replay follows |
+| `connection` | `connecting` / `live` / `down` / `unavailable` | shows it; `unavailable` drives P0-17's screen |
+
+MAIN sends `reset` when the supervisor starts a **different** core (new token), when
+the core closes with `4410`/`4400`/`1003`, and on every renderer page load
+(`did-finish-load`). A reconnect to the **same** core uses `?since=` and sends no reset.
+The renderer subscribes in `main.tsx` before its first render, so it hears the
+reset and the replay that follow a page load.
+
 ---
 
 ## 10. Autonomy levels (user-facing setting)

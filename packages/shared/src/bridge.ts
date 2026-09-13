@@ -65,6 +65,31 @@ export interface CoreResponse {
   readonly body: unknown;
 }
 
+/**
+ * Where MAIN's connection to the event stream stands. Pushed, never polled.
+ *
+ * - `connecting` — a core is running and MAIN is (re)opening the stream.
+ * - `live` — events are flowing.
+ * - `down` — no core right now; the supervisor is starting or restarting one.
+ * - `unavailable` — the supervisor gave up (`RECOVERY.md § 4`, P0-17's screen).
+ */
+export type CoreConnection = 'connecting' | 'live' | 'down' | 'unavailable';
+
+/**
+ * What `core.subscribe` delivers. An envelope, because the renderer has to learn
+ * three things over the one channel and a bare event can only say one of them.
+ */
+export type CoreStreamMessage =
+  /** One `§ 9.2` event, in `seq` order. `unknown` on purpose: the store validates it. */
+  | { readonly kind: 'event'; readonly event: unknown }
+  /**
+   * Drop everything derived from the stream. Sent when a new core starts, when the
+   * core cannot replay from MAIN's cursor, and when the renderer (re)loads. A full
+   * replay of whatever the core retains follows.
+   */
+  | { readonly kind: 'reset' }
+  | { readonly kind: 'connection'; readonly state: CoreConnection };
+
 /** Global shortcuts, owned by MAIN so a hung core cannot disable them. */
 export interface HotkeyMap {
   /** Electron accelerator for the kill switch (`REMEMBER.md` invariant 2). */
@@ -87,10 +112,11 @@ export interface AegisBridge {
     /** Proxied to the core over `127.0.0.1`; MAIN adds the bearer token. */
     request(request: CoreRequest): Promise<BridgeResult<CoreResponse>>;
     /**
-     * The live event stream (`ARCHITECTURE.md § 9.2`). Events arrive as
-     * `unknown` until P0-11 generates their types; the store validates them.
+     * The live event stream (`ARCHITECTURE.md § 9.2`), held open by MAIN. Events
+     * arrive wrapped in a `CoreStreamMessage`; their bodies stay `unknown` and are
+     * validated by the renderer's store.
      */
-    subscribe(listener: (event: unknown) => void): Unsubscribe;
+    subscribe(listener: (message: CoreStreamMessage) => void): Unsubscribe;
   };
 
   readonly window: {

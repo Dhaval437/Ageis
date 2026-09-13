@@ -15,7 +15,7 @@ import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow, IpcMainInvokeEvent, WebContents } from 'electron';
 import { realpath } from 'node:fs';
 import { promisify } from 'node:util';
-import type { UpdateStatus } from '@aegis/shared';
+import type { CoreStreamMessage, UpdateStatus } from '@aegis/shared';
 import { EVENT_CHANNELS, INVOKE_CHANNELS, SEND_CHANNELS } from './bridge-channels.js';
 import {
   createBridgeHandlers,
@@ -53,7 +53,7 @@ export interface BridgeIpc {
 }
 
 export interface BridgeSender {
-  coreEvent(event: unknown): void;
+  coreEvent(message: CoreStreamMessage): void;
   updateStatus(status: UpdateStatus): void;
   deepLink(url: string): void;
 }
@@ -209,8 +209,8 @@ function createBridgeSender(getWindow: () => BrowserWindow | null): BridgeSender
   };
 
   return {
-    coreEvent: (event: unknown) => {
-      to(EVENT_CHANNELS.coreEvent, event);
+    coreEvent: (message: CoreStreamMessage) => {
+      to(EVENT_CHANNELS.coreEvent, message);
     },
     updateStatus: (status: UpdateStatus) => {
       to(EVENT_CHANNELS.updatesStatus, status);

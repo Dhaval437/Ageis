@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '@/components/AppShell';
+import { INITIAL_STREAM, useStreamStore } from '@/stores/stream';
 
 /**
  * The preload injects `window.aegis` before any renderer code runs. jsdom has
@@ -10,6 +11,7 @@ const windowBridge = { minimize: vi.fn(), close: vi.fn() };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useStreamStore.setState(INITIAL_STREAM);
   vi.stubGlobal('aegis', { window: windowBridge });
 });
 
@@ -65,5 +67,29 @@ describe('AppShell', () => {
     for (const name of ['Minimise', 'Close']) {
       expect(screen.getByRole('button', { name }).closest('.app-no-drag'), name).not.toBeNull();
     }
+  });
+
+  it('shows the engine starting until the stream is live, then idle', () => {
+    render(<AppShell />);
+    expect(screen.getByRole('status')).toHaveTextContent('Starting the engine…');
+
+    act(() => {
+      useStreamStore.getState().apply({ kind: 'connection', state: 'live' });
+    });
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Status: idle' })).toBeInTheDocument();
+
+    act(() => {
+      useStreamStore.getState().apply({ kind: 'connection', state: 'down' });
+    });
+    expect(screen.getByRole('status')).toHaveTextContent('Reconnecting…');
+  });
+
+  it('marks the status red when the engine is unavailable', () => {
+    useStreamStore.getState().apply({ kind: 'connection', state: 'unavailable' });
+    render(<AppShell />);
+    expect(screen.getByRole('img', { name: 'Status: the engine is not running' })).toHaveClass(
+      'bg-danger',
+    );
   });
 });

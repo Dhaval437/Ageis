@@ -14,10 +14,12 @@
     "clean": "rimraf dist .turbo"
   },
   "dependencies": {
-    "@aegis/shared": "workspace:*"
+    "@aegis/shared": "workspace:*",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/node": "^22.19.1",
+    "@types/ws": "^8.18.1",
     "electron": "^32.3.3",
     "rimraf": "^6.0.1",
     "typescript": "^5.9.3",

@@ -113,6 +113,7 @@ The HUD exists because the agent is driving the user's actual desktop — the ma
 - **Scope selector** — which folders/apps the agent may touch this task. Shows the scope name; the dropdown lists folders with a "Manage scopes…" link. Changing scope mid-task is disabled (shows why on hover).
 - **Autonomy selector** — Observe / Guided / Standard / Trusted, with a one-line description under each. Changing to a *more* permissive level while a task runs requires re-confirmation.
 - **Status dot**: grey idle · blue running · amber waiting-for-you · red stopped/error · purple blocked-by-policy.
+- **Engine note** (P0-09), beside the name and only while the event stream is not live: *Starting the engine…* before the first connection, *Reconnecting…* after one, and *The engine is not running.* with a red dot once the supervisor gives up. It is a `role="status"` region. The full Engine-unavailable screen is P0-17.
 - **Window controls** — minimise and close, outside the drag region, driven through `window.aegis.window` (P0-04). The sketch above shows a maximise button too; the bridge surface in `ARCHITECTURE.md § 9.3` has no `maximize`, and widening it is a `REVIEW.md § 5` item, so that one is tracked as `P0-15` rather than added quietly.
 
 ### 4.2 The step card (the most important component in the app)

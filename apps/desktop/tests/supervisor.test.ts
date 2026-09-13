@@ -260,6 +260,44 @@ describe('createSupervisor', () => {
     await supervisor.stop();
   });
 
+  it('reports each healthy session, and its loss, to onSession', async () => {
+    const sessions: ({ port: number; token: string } | null)[] = [];
+    const { cores, startCoreFn } = spawner(() => new FakeCore());
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: () => healthyGateway(),
+      restartDelayMs: 1,
+      onSession: (session) => sessions.push(session),
+    });
+    await supervisor.start();
+    cores[0]?.exit(1);
+    await settleOn(supervisor.state, ['running']);
+    await supervisor.stop();
+
+    // Healthy core → gone → a new core with a new token → gone on stop.
+    expect(sessions).toHaveLength(4);
+    expect(sessions[0]).toEqual({ port: 49_001, token: '1'.padStart(64, '0') });
+    expect(sessions[1]).toBeNull();
+    expect(sessions[2]).toEqual({ port: 49_002, token: '2'.padStart(64, '0') });
+    expect(sessions[3]).toBeNull();
+  });
+
+  it('never reports a session for a core that failed its health check', async () => {
+    const onSession = vi.fn();
+    const { startCoreFn } = spawner(() => new FakeCore());
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: () => healthyGateway(503),
+      restartDelayMs: 1,
+      onSession,
+    });
+    await supervisor.start();
+    expect(supervisor.state().status).toBe('unavailable');
+    expect(onSession).not.toHaveBeenCalled();
+  });
+
   it('kills the core on stop and does not restart it', async () => {
     const { cores, startCoreFn } = spawner(() => new FakeCore());
     const supervisor = createSupervisor({

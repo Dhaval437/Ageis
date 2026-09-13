@@ -11,15 +11,17 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { engineStatusView } from '@/lib/engine-status';
 import { cn } from '@/lib/utils';
+import { useStreamStore } from '@/stores/stream';
 
 /**
  * The main-window frame from `UI.md § 4`: titlebar, 64px rail, flexible
  * conversation column, 360px live view, composer.
  *
- * This is the skeleton (P0-03). Every region is still static: the timeline, the
- * live view and the composer become functions of the event stream in P0-09.
- * The window controls are live as of P0-04.
+ * The frame is P0-03; window controls are live as of P0-04. The titlebar's
+ * status reads the event-stream store (P0-09); the timeline, live view and
+ * composer read it too once they have events to show (P4-11).
  */
 
 interface Section {
@@ -66,13 +68,7 @@ export function AppShell(): ReactElement {
 function Titlebar(): ReactElement {
   return (
     <header className="app-drag flex h-11 shrink-0 items-center gap-3 border-b border-border bg-surface-1 px-3">
-      <span
-        // Status is derived from the event stream in P0-09; idle is grey.
-        className="size-2 rounded-pill bg-text-dim"
-        role="img"
-        aria-label="Status: idle"
-      />
-      <span className="text-base font-medium">Aegis</span>
+      <EngineStatus />
       <div className="ml-auto flex items-center gap-2 text-sm text-text-dim">
         {/* ScopePicker and AutonomyPicker are real controls from P3 onward. */}
         <span className="app-no-drag rounded-pill border border-border px-2.5 py-1">
@@ -82,6 +78,31 @@ function Titlebar(): ReactElement {
         <WindowControls />
       </div>
     </header>
+  );
+}
+
+/**
+ * The titlebar's status dot and, while the engine is not live, a short note.
+ * The full Engine-unavailable screen (`RECOVERY.md § 4`) is P0-17.
+ */
+function EngineStatus(): ReactElement {
+  const connection = useStreamStore((state) => state.connection);
+  const hasBeenLive = useStreamStore((state) => state.hasBeenLive);
+  const view = engineStatusView(connection, hasBeenLive);
+  return (
+    <>
+      <span
+        className={cn('size-2 rounded-pill', view.tone === 'error' ? 'bg-danger' : 'bg-text-dim')}
+        role="img"
+        aria-label={view.label}
+      />
+      <span className="text-base font-medium">Aegis</span>
+      {view.note !== null && (
+        <span className="text-sm text-text-dim" role="status">
+          {view.note}
+        </span>
+      )}
+    </>
   );
 }
 

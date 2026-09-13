@@ -6,8 +6,8 @@
  * invariant 2) and the supervision of the Python core (invariant 14).
  *
  * Landed so far: window, frameless shell for the custom titlebar, tray, the
- * single-instance lock (P0-02), the preload bridge (P0-04) and the core
- * supervisor (P0-07). The real kill switch is P3-06 — the bridge namespaces it
+ * single-instance lock (P0-02), the preload bridge (P0-04), the core
+ * supervisor (P0-07) and the event stream forwarded to the renderer (P0-09). The real kill switch is P3-06 — the bridge namespaces it
  * backs are registered and answer `unavailable` until then.
  */
 
@@ -18,6 +18,7 @@ import { createMainWindow } from './window.js';
 import { createTray, type TrayHandle } from './tray.js';
 import type { TrayMenuState } from './tray-menu.js';
 import { registerBridgeIpc, type BridgeIpc } from './ipc.js';
+import { createCoreStream, type CoreAvailability, type CoreStream } from './core-stream.js';
 import {
   createSupervisor,
   resolveCoreLaunch,
@@ -32,6 +33,7 @@ let mainWindow: BrowserWindow | null = null;
 let tray: TrayHandle | null = null;
 let bridge: BridgeIpc | null = null;
 let supervisor: Supervisor | null = null;
+let coreStream: CoreStream | null = null;
 let trayState: TrayMenuState = { windowVisible: false, taskRunning: false };
 
 function setTrayState(patch: Partial<TrayMenuState>): void {
@@ -70,6 +72,11 @@ function openMainWindow(): void {
   mainWindow.on('hide', () => {
     setTrayState({ windowVisible: false });
   });
+  // Fires on the first load and on every reload: whatever the page had been told
+  // died with it, so the stream starts over and replays what the core retains.
+  mainWindow.webContents.on('did-finish-load', () => {
+    coreStream?.restart();
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
     setTrayState({ windowVisible: false });
@@ -99,6 +106,8 @@ function bootstrap(): void {
   app.on('before-quit', () => {
     tray?.destroy();
     tray = null;
+    coreStream?.dispose();
+    coreStream = null;
     bridge?.dispose();
     bridge = null;
     // Invariant 14: the core must not outlive the UI. `stop()` is fire-and-
@@ -114,6 +123,11 @@ function bootstrap(): void {
     .then(() => {
       // Registered before the window exists, so the renderer cannot call a
       // channel that is not there yet during its first paint.
+      coreStream = createCoreStream({
+        deliver: (message) => {
+          bridge?.send.coreEvent(message);
+        },
+      });
       supervisor = createCoreSupervisor();
 
       bridge = registerBridgeIpc({
@@ -170,13 +184,22 @@ function createCoreSupervisor(): Supervisor {
       overrideCommand: process.env['AEGIS_CORE_COMMAND'],
     }),
     onState: onSupervisorState,
+    onSession: (session) => {
+      coreStream?.setSession(session);
+    },
   });
 }
 
+function availabilityOf(state: SupervisorState): CoreAvailability {
+  if (state.status === 'running') return 'running';
+  return state.status === 'unavailable' ? 'unavailable' : 'down';
+}
+
 function onSupervisorState(state: SupervisorState): void {
+  coreStream?.setAvailability(availabilityOf(state));
   if (state.status === 'unavailable') {
-    // RECOVERY.md § 4's Engine-unavailable screen is P0-09; until the renderer
-    // can be told, the log is the only place this surfaces.
+    // The renderer now hears `unavailable` over the stream; RECOVERY.md § 4's
+    // Engine-unavailable screen that acts on it is P0-17.
     console.error('[main] the core is unavailable:', state.lastError ?? 'unknown reason');
   }
 }

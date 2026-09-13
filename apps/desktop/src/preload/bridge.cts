@@ -29,6 +29,7 @@ import type {
   AegisBridge,
   BridgeResult,
   CoreRequest,
+  CoreStreamMessage,
   CoreResponse,
   HotkeyMap,
   Unsubscribe,
@@ -56,8 +57,8 @@ const bridge: AegisBridge = {
   core: {
     request: async (request: CoreRequest): Promise<BridgeResult<CoreResponse>> =>
       (await ipcRenderer.invoke('aegis:core:request', request)) as BridgeResult<CoreResponse>,
-    subscribe: (listener: (event: unknown) => void): Unsubscribe =>
-      on<unknown>('aegis:core:event', listener),
+    subscribe: (listener: (message: CoreStreamMessage) => void): Unsubscribe =>
+      on<CoreStreamMessage>('aegis:core:event', listener),
   },
 
   window: {

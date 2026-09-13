@@ -79,6 +79,12 @@ export interface SupervisorOptions {
   readonly spec: CoreLaunchSpec;
   /** Called on every state change, so MAIN can update the tray and the renderer. */
   readonly onState?: (state: SupervisorState) => void;
+  /**
+   * Called with the live core's port and token once it passes its health check,
+   * and with `null` the moment it is gone. The event stream (`core-stream.ts`)
+   * uses this to tell a new core from a reconnect to the same one.
+   */
+  readonly onSession?: (session: { port: number; token: string } | null) => void;
   /** Injected in tests. */
   readonly startCoreFn?: StartCoreFn;
   readonly createGatewayFn?: CreateGatewayFn;
@@ -216,6 +222,7 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
     if (exited !== child) return;
     child = null;
     gateway = null;
+    options.onSession?.(null);
     if (stopped) return;
     setState({ lastError: 'The core stopped unexpectedly.' });
     scheduleRestart();
@@ -245,6 +252,7 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
     started.child.once('exit', () => {
       onCoreExit(started.child);
     });
+    options.onSession?.({ port: started.session.port, token: started.session.token });
   }
 
   async function attemptLoop(): Promise<SupervisorState> {
@@ -295,6 +303,7 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
       const running = child;
       child = null;
       gateway = null;
+      if (running !== null) options.onSession?.(null);
       setState({ status: 'stopped' });
       if (running !== null) await killChild(running, KILL_GRACE_MS);
     },
