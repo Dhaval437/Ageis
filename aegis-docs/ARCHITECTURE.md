@@ -356,6 +356,22 @@ Every event: `{seq, ts, task_id, type, payload}`. Types:
 
 The UI is a pure function of this stream. `seq` is monotonic; on reconnect the client sends `?since=<seq>` and the core replays from SQLite. **The UI must never poll for task state.**
 
+Wire details (P0-08, `server/hub.py` + `server/routes.py`; model `StreamEvent` in `server/schemas.py`):
+
+- One JSON text frame per event, in `seq` order. `seq` starts at 1; `ts` is UTC ISO-8601 with milliseconds; `task_id` is `null` for app-wide events. An event type not listed above is refused at publish time.
+- The upgrade goes through the same session auth as REST (token, no `Origin`, peer PID). A refused upgrade is a bare HTTP 403.
+- No `since` → replay everything retained, then live. `since=N` → replay exactly the events after `N`, or refuse; a stream with a hole in it is never sent.
+- The stream is one-way. Commands go over REST.
+- Until P6-06, replay comes from memory (last 2048 events), and `seq` restarts at 1 when the core restarts. **A client must drop its `since` cursor whenever MAIN's supervisor starts a new core.** A cursor ahead of the core is refused, but one that happens to be behind a new core's `seq` cannot be told apart.
+
+| Close code | Meaning | Client should |
+|---|---|---|
+| `1000`/`1001` | Normal close / core shutting down | Reconnect with `since` once the core is back |
+| `1003` | The client sent a message | Fix the client |
+| `4400` | `since` is not a non-negative integer (≤ 15 digits) | Fix the client |
+| `4410` | Events after `since` are not retained, or `since` is ahead of this core | Drop state; reconnect **without** `since` |
+| `4429` | Fell 512 events behind live | Reconnect with the last `seq` it applied |
+
 ### 9.3 Electron preload bridge (the complete surface)
 
 ```ts

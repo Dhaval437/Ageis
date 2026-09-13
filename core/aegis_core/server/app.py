@@ -22,6 +22,7 @@ from fastapi import FastAPI
 
 from aegis_core import __version__
 from aegis_core.server.auth import SessionAuth, SessionAuthMiddleware
+from aegis_core.server.hub import EventHub
 from aegis_core.server.routes import router
 
 log = logging.getLogger(__name__)
@@ -33,12 +34,17 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        app.state.hub.close()
         uptime = round(time.monotonic() - app.state.started_monotonic, 3)
         log.info("core.stopped", extra={"uptime": uptime})
 
 
-def create_app(auth: SessionAuth) -> FastAPI:
-    """Build the core's HTTP app, authenticated against this session's token."""
+def create_app(auth: SessionAuth, hub: EventHub | None = None) -> FastAPI:
+    """Build the core's HTTP app, authenticated against this session's token.
+
+    `hub` is the event bus behind `WS /v1/stream`; publishers reach it as
+    `app.state.hub`. One is created if none is given.
+    """
     app = FastAPI(
         title="AEGIS core",
         version=__version__,
@@ -48,6 +54,7 @@ def create_app(auth: SessionAuth) -> FastAPI:
         openapi_url=None,
     )
     app.state.started_monotonic = time.monotonic()
+    app.state.hub = hub if hub is not None else EventHub()
     app.include_router(router)
     # Added last so it wraps everything, including FastAPI's own 404 and 405
     # responses: an unauthenticated caller must not be able to map the routes.
