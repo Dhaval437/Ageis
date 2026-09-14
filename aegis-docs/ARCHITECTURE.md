@@ -116,7 +116,7 @@ aegis/
 └─ scripts/                       # build-core.ps1, sign.ps1, release.ps1
 ```
 
-**Type-safety rule:** Pydantic models in `core/aegis_core/server/schemas.py` are the single source of truth. `scripts/gen-types.ts` runs `datamodel-codegen`-style export into `packages/shared/src/api.ts`. Never hand-write a TS type that mirrors a Python model.
+**Type-safety rule:** Pydantic models in `core/aegis_core/server/schemas.py` are the single source of truth. `core/aegis_core/server/typegen.py` introspects that module and renders every `BaseModel` defined in it as a `readonly` interface, and every module-level `Literal` alias as a `const` tuple plus a derived type (`EventType` → `EVENT_TYPES`). `scripts/gen-types.ts` runs it, formats the result with prettier and writes `packages/shared/src/api.ts`. `pnpm dev` regenerates first; `pnpm test` runs `pnpm gen:types:check` and fails if the committed file is stale. Fields are emitted in their serialised shape (a defaulted field is not optional), and an annotation the generator does not know is an error, not `unknown`. Never hand-write a TS type that mirrors a Python model.
 
 ---
 

@@ -1,8 +1,11 @@
 """Pydantic models for the core's HTTP and WebSocket surface.
 
 `ARCHITECTURE.md § 4`: these models are the single source of truth for the TypeScript
-types in `packages/shared` — the generator lands in P0-11. Never hand-write a TS type
-that mirrors one of them.
+types in `packages/shared/src/api.ts`, which `aegis_core.server.typegen` renders from
+this module (`pnpm gen:types`). Never hand-write a TS type that mirrors one of them.
+
+Every `BaseModel` defined here and every module-level `Literal` alias is exported. An
+alias is documented by a string literal on the line after it, which becomes its JSDoc.
 """
 
 from __future__ import annotations
@@ -22,7 +25,10 @@ class HealthResponse(BaseModel):
     uptime: float = Field(ge=0, description="Seconds since the app was created.")
 
 
-#: The event types of `ARCHITECTURE.md § 9.2`. Adding one is an `§ 9.2` edit first.
+RiskTier = Literal["SAFE", "CAUTION", "DANGEROUS", "FORBIDDEN"]
+"""Risk tiers every tool call is classified into. See `REMEMBER.md § 6`."""
+
+
 EventType = Literal[
     "task.created",
     "task.status",
@@ -37,6 +43,7 @@ EventType = Literal[
     "cost.updated",
     "log",
 ]
+"""Every event type on `WS /v1/stream`. Adding one is an `ARCHITECTURE.md § 9.2` edit first."""
 
 
 class StreamEvent(BaseModel):
