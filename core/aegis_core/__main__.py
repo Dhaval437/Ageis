@@ -4,6 +4,8 @@ Runs the core's half of the `ARCHITECTURE.md § 3.1` startup handshake, then ser
 the FastAPI app on the socket it bound:
 
 1. Read the 256-bit session token from the **stdin pipe** — never from argv.
+   Then create or migrate `aegis.db`; a core that cannot use its database does not
+   announce itself, so MAIN sees a failed start rather than a later failed task.
 2. Bind `127.0.0.1:<port>`; `0` (the default) asks the OS for an ephemeral one.
 3. Write `{"port","pid","version"}` as one JSON line on stdout, then close stdout.
 4. Serve, rejecting anything that is not MAIN with a bare `401`, and watching the
@@ -40,11 +42,15 @@ from aegis_core.server.handshake import (
     bind_loopback,
     read_token,
 )
+from aegis_core.storage.db import StorageError, bootstrap
 
 log = logging.getLogger(__name__)
 
 #: Exit code when the core stopped because its supervisor did.
 EXIT_SUPERVISOR_LOST: Final = 3
+
+#: Exit code when `aegis.db` could not be opened or migrated.
+EXIT_STORAGE_FAILED: Final = 4
 
 #: How long uvicorn gets to unwind before the process ends outright. Together with
 #: the 0.5 s poll interval this keeps the core inside § 3.1 step 6's 2 s budget.
@@ -129,6 +135,7 @@ def main(
     )
 
     token = read_token(stdin if stdin is not None else sys.stdin)
+    bootstrap()
     sock = bind_loopback(args.port)
     try:
         port = sock.getsockname()[1]
@@ -160,3 +167,7 @@ if __name__ == "__main__":
         log.error("core.handshake_failed", extra={"error": str(error)})
         sys.stderr.write(f"aegis-core: {error}\n")
         raise SystemExit(2) from error
+    except StorageError as error:
+        log.error("core.storage_failed", extra={"error": str(error)})
+        sys.stderr.write(f"aegis-core: {error}\n")
+        raise SystemExit(EXIT_STORAGE_FAILED) from error

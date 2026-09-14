@@ -9,12 +9,15 @@ import os
 import socket
 from collections.abc import Iterator
 from pathlib import Path
+from typing import IO
 
 import pytest
 from aegis_core import __main__ as entry
 from aegis_core import __version__
+from aegis_core.server import handshake as handshake_module
 from aegis_core.server.auth import SessionAuth
-from aegis_core.server.handshake import LOOPBACK, HandshakeError
+from aegis_core.server.handshake import LOOPBACK, Handshake, HandshakeError
+from aegis_core.storage.db import StorageError
 from fastapi import FastAPI
 
 TOKEN = "f" * 64
@@ -211,6 +214,31 @@ def test_main_logs_a_startup_line_to_file(served: _Served, tmp_path: Path) -> No
     contents = (tmp_path / "Aegis" / "logs" / "core.log").read_text(encoding="utf-8")
     assert "core.starting" in contents
     assert "core.listening" in contents
+
+
+def test_the_database_is_ready_before_the_core_announces(
+    served: _Served, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_file = tmp_path / "Aegis" / "aegis.db"
+    seen_at_announce: list[bool] = []
+
+    def spy(handshake: Handshake, stream: IO[str]) -> None:
+        seen_at_announce.append(db_file.is_file())
+        handshake_module.announce(handshake, stream)
+
+    monkeypatch.setattr("aegis_core.__main__.announce", spy)
+    run()
+    assert seen_at_announce == [True]
+
+
+def test_an_unusable_database_means_no_server(served: _Served, tmp_path: Path) -> None:
+    (tmp_path / "Aegis").mkdir()
+    (tmp_path / "Aegis" / "aegis.db").write_bytes(b"not a database " * 300)
+    stdout = _Pipe()
+    with pytest.raises(StorageError):
+        entry.main([], stdin=io.StringIO(f"{TOKEN}\n"), stdout=stdout)
+    assert served.port is None
+    assert stdout.getvalue() == ""
 
 
 def test_version_flag_exits_cleanly(capsys: pytest.CaptureFixture[str]) -> None:

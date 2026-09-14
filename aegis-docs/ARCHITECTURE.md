@@ -246,10 +246,11 @@ observations(id, task_id, step_id, kind, path, phash, meta_json)   -- images on 
 approvals(id, step_id, prompt, choice, remembered, decided_at)
 audit(id, ts, actor, event, payload_json, prev_hash, hash)         -- hash-chained, append-only
 facts(id, scope, key, value, source_task_id, created_at)           -- durable agent memory
-journal(id, task_id, step_id, op, undo_json, applied, undone_at)   -- see RECOVERY.md
+journal(id, task_id, step_id, op, forward_json, undo_json, applied, created_at, undone_at)  -- see RECOVERY.md
 settings(key, value_json)
 ```
 
+- Implemented in `storage/migrations/m0001_initial.py` (P0-10): `STRICT` tables, UTC ISO-8601 `TEXT` timestamps, 0/1 `INTEGER` booleans, `json_valid` on every `*_json` column, `CHECK`s on status/risk/decision/choice, `cost_cents` is `REAL`, `audit` append-only by trigger. Every connection gets WAL + `synchronous=FULL` + foreign keys (`storage/db.py`). Schema version = `PRAGMA user_version`; the core creates or migrates the DB before its handshake line.
 - `audit.hash = SHA256(prev_hash || ts || actor || event || payload_json)`. A verifier command (`aegis verify-log`) re-walks the chain. Tamper-evident, and the basis of the "prove what the agent did" story.
 - Screenshots live in `%LOCALAPPDATA%\Aegis\obs\<task>\<step>.webp`, auto-purged after N days (Settings, default 14).
 - **No task content, screenshot, or prompt ever leaves the machine** except to the model provider the user chose. There is no Aegis backend in v1.
