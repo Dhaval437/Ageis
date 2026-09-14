@@ -5,6 +5,7 @@
     "moduleResolution": "NodeNext",
     "types": ["node"],
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true
   },
   "include": ["*.ts"]
