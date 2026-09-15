@@ -288,3 +288,5 @@ Loading is never a bare spinner: skeletons for lists, streaming text for thought
 `StepCard` · `RiskChip` · `ApprovalDialog` · `OverlayHUD` · `Composer` · `ScopePicker` · `AutonomyPicker` · `LiveView` · `TimelineList` · `ModelRoleCard` · `ProviderCard` · `RuleRow` · `SpendMeter` · `StatusDot` · `KillSwitchBar` · `EmptyState` · `ErrorCard` · `LogTable` · `WizardShell`
 
 Each ships with a Storybook story covering: default, loading, error, and the longest realistic content. A component without an error story is not done (`REVIEW.md § 3`).
+
+How that is enforced (P0-13): every `src/components/**/*.tsx` needs a `*.stories.tsx` beside it that exports `Default`, `Loading`, `Empty`, `Error` and `LongestContent`. A state the component genuinely does not have is declared in `parameters.aegis.notApplicable` **with a reason** instead of a faked story — except `Error`, which a component in the list above may never skip. `tests/stories.test.tsx` checks all of this and renders every story, so `pnpm test` fails on a missing one. `pnpm --filter @aegis/renderer storybook` runs it on `:6006`; the toolbar switches theme.

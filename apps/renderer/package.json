@@ -9,8 +9,10 @@
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "lint": "eslint src tests",
-    "clean": "rimraf dist .turbo"
+    "storybook": "storybook dev --port 6006 --no-open --no-version-updates",
+    "build-storybook": "storybook build --output-dir storybook-static",
+    "lint": "eslint src tests .storybook",
+    "clean": "rimraf dist .turbo storybook-static"
   },
   "dependencies": {
     "@aegis/shared": "workspace:*",
@@ -25,6 +27,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@storybook/react-vite": "10.6.0",
     "@tailwindcss/vite": "^4.1.16",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^7.0.1",
@@ -34,6 +37,7 @@
     "@vitejs/plugin-react": "^4.7.0",
     "jsdom": "^30.0.1",
     "rimraf": "^6.0.1",
+    "storybook": "10.6.0",
     "tailwindcss": "^4.1.16",
     "typescript": "^5.9.3",
     "vite": "^6.3.6",
