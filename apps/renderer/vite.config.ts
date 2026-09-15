@@ -16,6 +16,9 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: true,
+    // A small font subset would otherwise be inlined as a `data:` URI, which the
+    // CSP's `default-src 'self'` refuses. Fonts are always emitted as files.
+    assetsInlineLimit: (file) => (file.endsWith('.woff2') ? false : undefined),
   },
   server: {
     port: 5173,

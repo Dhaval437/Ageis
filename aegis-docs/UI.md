@@ -60,7 +60,7 @@ token is dropped, renamed, or defined for only one theme.
 
 Risk tier colour is used **consistently and only** for risk: a `--danger` element always means an irreversible action, never just "delete this chat".
 
-**Type:** Inter (UI) / JetBrains Mono (code, paths, commands) — not bundled yet (`PROGRESS.md P0-14`), so both stacks currently fall through to the Windows system faces rather than to a webfont request. Scale 12 / 13 / 14 / 16 / 20 / 28. Body 14/1.5.
+**Type:** Inter (UI) / JetBrains Mono (code, paths, commands) — both bundled as variable woff2 (`@fontsource-variable/*`, families `Inter Variable` / `JetBrains Mono Variable`) and loaded from the app's own files, never a webfont CDN. The Windows system faces behind them in each stack are only a fallback for a file that fails to load. `fonts.test.ts` fails if either face would need the network or a `data:` URI. Scale 12 / 13 / 14 / 16 / 20 / 28. Body 14/1.5.
 **Spacing:** 4px base; 8/12/16/24 the common steps. **Radius:** 8px cards, 6px controls, 999px pills.
 **Motion:** 120 ms ease-out for state, 200 ms for panels. Respect `prefers-reduced-motion`. Nothing animates during an approval dialog — a moving dialog is a dialog people misclick.
 **Iconography:** Lucide, 16/20px, 1.5 stroke.
