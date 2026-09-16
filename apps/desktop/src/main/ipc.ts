@@ -11,9 +11,11 @@
  * nothing else is. There is no generic `invoke` passthrough (P0-04).
  */
 
-import { app, dialog, ipcMain, shell } from 'electron';
+import { app, clipboard, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow, IpcMainInvokeEvent, WebContents } from 'electron';
 import { realpath } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import type { CoreStreamMessage, UpdateStatus } from '@aegis/shared';
 import { EVENT_CHANNELS, INVOKE_CHANNELS, SEND_CHANNELS } from './bridge-channels.js';
@@ -21,9 +23,18 @@ import {
   createBridgeHandlers,
   type BridgeDependencies,
   type BridgeHandlers,
+  type DiagnosticsService,
   type SystemService,
   type WindowService,
 } from './bridge-handlers.js';
+import {
+  buildDiagnosticReport,
+  coreLogFile,
+  readLogTail,
+  REPORT_LOG_LINES,
+  type DiagnosticEngine,
+} from './diagnostics.js';
+import { aegisLogDir } from './paths.js';
 import { createPathGrants, type PathGrants, type Realpath } from './path-grants.js';
 
 /**
@@ -40,8 +51,10 @@ export interface BridgeServices {
   readonly getWindow: () => BrowserWindow | null;
   /** Toggles the `OverlayHUD` window. Null until P3-13 builds it. */
   readonly setOverlay: ((visible: boolean) => Promise<void>) | null;
-  /** The core gateway, hotkey service and update service, as they land. */
-  readonly rest: Pick<BridgeDependencies, 'core' | 'hotkeys' | 'updates'>;
+  /** The core gateway, its lifecycle, the hotkey service and updates, as they land. */
+  readonly rest: Pick<BridgeDependencies, 'core' | 'coreControl' | 'hotkeys' | 'updates'>;
+  /** The engine state the diagnostic report quotes (`RECOVERY.md § 4`). */
+  readonly engineState: () => DiagnosticEngine;
 }
 
 export interface BridgeIpc {
@@ -69,7 +82,15 @@ export interface BridgeSender {
  */
 export function registerBridgeIpc(services: BridgeServices): BridgeIpc {
   const grants = createPathGrants(REALPATH);
-  void grants.grantRoot(app.getPath('logs'));
+  const logDir = aegisLogDir(process.env, homedir());
+  // Created here so `Open logs` works even when the core never started and so
+  // never made the folder — which is exactly the case the Engine-unavailable
+  // screen is for. A grant is only usable if the path resolves.
+  void mkdir(logDir, { recursive: true })
+    .then(() => grants.grantRoot(logDir))
+    .catch((error: unknown) => {
+      console.error('[main] could not prepare the log folder', error);
+    });
   void grants.grantRoot(app.getPath('userData'));
 
   const handlers = createBridgeHandlers({
@@ -77,9 +98,12 @@ export function registerBridgeIpc(services: BridgeServices): BridgeIpc {
     grants,
     window: () => windowService(services),
     system: () => systemService(services),
+    diagnostics: () => diagnosticsService(services, logDir),
     appInfo: {
       version: () => app.getVersion(),
-      logsPath: () => app.getPath('logs'),
+      // The engine's log folder, not Electron's own: the core writes there and
+      // MAIN does not write log files at all (see `paths.ts`).
+      logsPath: () => logDir,
     },
   });
 
@@ -139,6 +163,32 @@ function systemService(services: BridgeServices): SystemService | null {
 }
 
 /**
+ * `Copy report` (`RECOVERY.md § 4`). MAIN reads the log and writes the clipboard
+ * itself: the report is assembled and redacted in `diagnostics.ts`, and the text
+ * never passes through the renderer.
+ */
+function diagnosticsService(services: BridgeServices, logDir: string): DiagnosticsService {
+  return {
+    copyReport: async (): Promise<void> => {
+      const report = buildDiagnosticReport({
+        versions: {
+          app: app.getVersion(),
+          electron: process.versions.electron,
+          chrome: process.versions.chrome,
+          node: process.versions.node,
+          os: `${process.platform} ${process.getSystemVersion()} (${process.arch})`,
+        },
+        engine: services.engineState(),
+        logLines: await readLogTail(coreLogFile(logDir), REPORT_LOG_LINES),
+        homeDir: homedir(),
+        generatedAt: new Date(),
+      });
+      clipboard.writeText(report);
+    },
+  };
+}
+
+/**
  * A renderer that is not ours must not reach these handlers. `will-navigate`
  * and the window-open handler in `window.ts` already make a foreign document
  * unreachable, but the sender check is what makes that a boundary rather than
@@ -193,6 +243,7 @@ function register(handlers: BridgeHandlers, services: BridgeServices): void {
   };
 
   invoke(INVOKE_CHANNELS.coreRequest, handlers.coreRequest, refused);
+  invoke(INVOKE_CHANNELS.coreRestart, handlers.coreRestart, refused);
   invoke(INVOKE_CHANNELS.windowSetOverlay, handlers.windowSetOverlay, refused);
   invoke(INVOKE_CHANNELS.hotkeysGet, handlers.hotkeysGet, refused);
   invoke(INVOKE_CHANNELS.hotkeysSet, handlers.hotkeysSet, refused);
@@ -203,6 +254,7 @@ function register(handlers: BridgeHandlers, services: BridgeServices): void {
   invoke(INVOKE_CHANNELS.updatesInstall, handlers.updatesInstall, refused);
   invoke(INVOKE_CHANNELS.appVersion, handlers.appVersion, '');
   invoke(INVOKE_CHANNELS.appLogsPath, handlers.appLogsPath, '');
+  invoke(INVOKE_CHANNELS.appCopyDiagnosticReport, handlers.appCopyDiagnosticReport, refused);
 
   send(SEND_CHANNELS.windowMinimize, handlers.windowMinimize);
   send(SEND_CHANNELS.windowMaximize, handlers.windowMaximize);

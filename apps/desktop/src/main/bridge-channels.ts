@@ -10,6 +10,7 @@
 /** Renderer→MAIN, request/response. */
 export const INVOKE_CHANNELS = {
   coreRequest: 'aegis:core:request',
+  coreRestart: 'aegis:core:restart',
   windowSetOverlay: 'aegis:window:set-overlay',
   hotkeysGet: 'aegis:hotkeys:get',
   hotkeysSet: 'aegis:hotkeys:set',
@@ -20,6 +21,7 @@ export const INVOKE_CHANNELS = {
   updatesInstall: 'aegis:updates:install',
   appVersion: 'aegis:app:version',
   appLogsPath: 'aegis:app:logs-path',
+  appCopyDiagnosticReport: 'aegis:app:copy-diagnostic-report',
 } as const;
 
 /** Renderer→MAIN, fire-and-forget. Nothing here may return data. */

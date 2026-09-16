@@ -96,6 +96,14 @@ export interface SupervisorOptions {
 export interface Supervisor {
   /** Starts the core and resolves once it is running, or out of attempts. */
   readonly start: () => Promise<SupervisorState>;
+  /**
+   * What `Restart engine` on the Engine-unavailable screen does (RECOVERY.md
+   * § 4, P0-17): kill whatever core is there, **clear the attempt window**, and
+   * start over. The window is cleared because a person asked — the 3-strike
+   * rule exists to stop MAIN spawning forever on its own, not to make the app
+   * unrecoverable until it is relaunched.
+   */
+  readonly restart: () => Promise<SupervisorState>;
   /** The gateway for the live core, or `null` while there isn't one. */
   readonly gateway: () => CoreGateway | null;
   readonly state: () => SupervisorState;
@@ -287,25 +295,49 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
     }
   }
 
+  async function stop(): Promise<void> {
+    stopped = true;
+    if (restartTimer !== null) {
+      clearTimeout(restartTimer);
+      restartTimer = null;
+    }
+    const running = child;
+    child = null;
+    gateway = null;
+    if (running !== null) options.onSession?.(null);
+    setState({ status: 'stopped' });
+    if (running !== null) await killChild(running, KILL_GRACE_MS);
+  }
+
+  /** In flight, so a second click joins the first restart instead of racing it. */
+  let restarting: Promise<SupervisorState> | null = null;
+
+  function restart(): Promise<SupervisorState> {
+    if (restarting !== null) return restarting;
+    const run = (async (): Promise<SupervisorState> => {
+      await stop();
+      // A person asked for this one, so it starts from a clean budget. Without
+      // this the spent window would make every restart fail instantly until the
+      // 60 s elapsed, which reads as a dead button.
+      attemptTimes = [];
+      setState({ attempts: 0, lastError: null });
+      stopped = false;
+      return attemptLoop();
+    })();
+    restarting = run;
+    return run.finally(() => {
+      restarting = null;
+    });
+  }
+
   return {
     start: (): Promise<SupervisorState> => {
       stopped = false;
       return attemptLoop();
     },
+    restart,
     gateway: (): CoreGateway | null => gateway,
     state: (): SupervisorState => state,
-    stop: async (): Promise<void> => {
-      stopped = true;
-      if (restartTimer !== null) {
-        clearTimeout(restartTimer);
-        restartTimer = null;
-      }
-      const running = child;
-      child = null;
-      gateway = null;
-      if (running !== null) options.onSession?.(null);
-      setState({ status: 'stopped' });
-      if (running !== null) await killChild(running, KILL_GRACE_MS);
-    },
+    stop,
   };
 }

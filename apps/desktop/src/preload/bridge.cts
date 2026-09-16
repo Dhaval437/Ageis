@@ -59,6 +59,8 @@ const bridge: AegisBridge = {
       (await ipcRenderer.invoke('aegis:core:request', request)) as BridgeResult<CoreResponse>,
     subscribe: (listener: (message: CoreStreamMessage) => void): Unsubscribe =>
       on<CoreStreamMessage>('aegis:core:event', listener),
+    restart: async (): Promise<BridgeResult<null>> =>
+      (await ipcRenderer.invoke('aegis:core:restart')) as BridgeResult<null>,
   },
 
   window: {
@@ -106,6 +108,8 @@ const bridge: AegisBridge = {
     version: async (): Promise<string> => (await ipcRenderer.invoke('aegis:app:version')) as string,
     logsPath: async (): Promise<string> =>
       (await ipcRenderer.invoke('aegis:app:logs-path')) as string,
+    copyDiagnosticReport: async (): Promise<BridgeResult<null>> =>
+      (await ipcRenderer.invoke('aegis:app:copy-diagnostic-report')) as BridgeResult<null>,
     onDeepLink: (listener: (url: string) => void): Unsubscribe =>
       on<string>('aegis:app:deep-link', listener),
   },

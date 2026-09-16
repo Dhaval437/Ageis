@@ -21,6 +21,7 @@ export const storyBridge: AegisBridge = {
   core: {
     request: unavailable,
     subscribe: () => noop,
+    restart: unavailable,
   },
   window: {
     minimize: noop,
@@ -48,6 +49,7 @@ export const storyBridge: AegisBridge = {
   app: {
     version: () => Promise.resolve('0.0.0-storybook'),
     logsPath: () => Promise.resolve(''),
+    copyDiagnosticReport: unavailable,
     onDeepLink: () => noop,
   },
 };

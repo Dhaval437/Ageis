@@ -204,6 +204,68 @@ describe('createSupervisor', () => {
     expect(state.lastError).toContain('spawn ENOENT');
   });
 
+  it('restarts on request after giving up, with a fresh attempt budget', async () => {
+    let spawns = 0;
+    const { cores, startCoreFn } = spawner(() => {
+      spawns += 1;
+      // The first three attempts fail, as an antivirus-blocked core does; the
+      // user then fixes it and presses Restart engine.
+      return spawns <= 3 ? new Error('spawn ENOENT') : new FakeCore();
+    });
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: () => healthyGateway(),
+      restartDelayMs: 1,
+      // Frozen clock: the 60 s window never expires on its own, so a restart
+      // that works proves the budget was cleared and not merely waited out.
+      now: () => 1_000,
+    });
+
+    expect((await supervisor.start()).status).toBe('unavailable');
+
+    const state = await supervisor.restart();
+
+    expect(state).toMatchObject({ status: 'running', attempts: 0, lastError: null });
+    expect(cores).toHaveLength(1);
+    await supervisor.stop();
+  });
+
+  it('kills the core that is there before starting another one', async () => {
+    const { cores, startCoreFn } = spawner(() => new FakeCore());
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: () => healthyGateway(),
+      restartDelayMs: 1,
+    });
+    await supervisor.start();
+
+    expect((await supervisor.restart()).status).toBe('running');
+
+    expect(cores).toHaveLength(2);
+    expect(cores[0]?.kills.length).toBeGreaterThan(0);
+    expect(cores[1]?.exitCode).toBeNull();
+    await supervisor.stop();
+  });
+
+  it('joins a restart already in flight rather than spawning twice', async () => {
+    const { cores, startCoreFn } = spawner(() => new FakeCore());
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn,
+      createGatewayFn: () => healthyGateway(),
+      restartDelayMs: 1,
+    });
+    await supervisor.start();
+
+    const [first, second] = await Promise.all([supervisor.restart(), supervisor.restart()]);
+
+    expect(first).toEqual(second);
+    expect(cores).toHaveLength(2);
+    await supervisor.stop();
+  });
+
   it('respawns a core that dies on its own', async () => {
     const { cores, startCoreFn } = spawner(() => new FakeCore());
     const supervisor = createSupervisor({

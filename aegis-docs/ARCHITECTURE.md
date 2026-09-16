@@ -377,12 +377,12 @@ Wire details (P0-08, `server/hub.py` + `server/routes.py`; model `StreamEvent` i
 
 ```ts
 window.aegis = {
-  core: { request, subscribe },            // proxied, token added in MAIN
+  core: { request, subscribe, restart },   // proxied, token added in MAIN
   window: { minimize, maximize, close, onMaximizedChange, setOverlay },
   hotkeys: { get, set },
   system: { pickFolder, openPath, revealInExplorer },
   updates: { check, install, onStatus },
-  app: { version, logsPath, onDeepLink },
+  app: { version, logsPath, copyDiagnosticReport, onDeepLink },
 }
 ```
 

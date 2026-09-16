@@ -6,7 +6,9 @@ import {
   parseHotkeyMap,
   type BridgeDependencies,
   type BridgeHandlers,
+  type CoreControl,
   type CoreGateway,
+  type DiagnosticsService,
   type HotkeyService,
   type SystemService,
   type UpdateService,
@@ -43,7 +45,9 @@ function services() {
     check: vi.fn(() => Promise.resolve({ state: 'idle' as const, version: null, message: null })),
     install: vi.fn(() => Promise.resolve()),
   };
-  return { core, window, hotkeys, system, updates };
+  const coreControl: CoreControl = { restart: vi.fn(() => Promise.resolve()) };
+  const diagnostics: DiagnosticsService = { copyReport: vi.fn(() => Promise.resolve()) };
+  return { core, window, hotkeys, system, updates, coreControl, diagnostics };
 }
 
 /** `realpath` for a world where everything under `WORK` exists and resolves to itself. */
@@ -60,6 +64,8 @@ function build(overrides: Partial<BridgeDependencies> = {}): {
   const svc = services();
   const deps: BridgeDependencies = {
     core: () => svc.core,
+    coreControl: () => svc.coreControl,
+    diagnostics: () => svc.diagnostics,
     window: () => svc.window,
     hotkeys: () => svc.hotkeys,
     system: () => svc.system,
@@ -75,6 +81,8 @@ function build(overrides: Partial<BridgeDependencies> = {}): {
 function buildEmpty(): BridgeHandlers {
   return createBridgeHandlers({
     core: () => null,
+    coreControl: () => null,
+    diagnostics: () => null,
     window: () => null,
     hotkeys: () => null,
     system: () => null,
@@ -224,6 +232,8 @@ describe('bridge handlers', () => {
       const svc = services();
       const handlers = createBridgeHandlers({
         core: () => svc.core,
+        coreControl: () => svc.coreControl,
+        diagnostics: () => svc.diagnostics,
         window: () => ({ ...svc.window, setOverlay: null }),
         hotkeys: () => svc.hotkeys,
         system: () => svc.system,
@@ -363,6 +373,8 @@ describe('bridge handlers', () => {
         empty.updatesInstall(),
         empty.appVersion(),
         empty.appLogsPath(),
+        empty.coreRestart(),
+        empty.appCopyDiagnosticReport(),
       ];
       await expect(Promise.all(calls)).resolves.toBeDefined();
     });

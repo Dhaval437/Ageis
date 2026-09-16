@@ -59,12 +59,12 @@ async function loadBridge(): Promise<AegisBridge> {
 
 /** The surface fixed by `ARCHITECTURE.md § 9.3`. Growing it is a `REVIEW.md § 5` item. */
 const SURFACE: Record<string, readonly string[]> = {
-  core: ['request', 'subscribe'],
+  core: ['request', 'subscribe', 'restart'],
   window: ['minimize', 'maximize', 'close', 'onMaximizedChange', 'setOverlay'],
   hotkeys: ['get', 'set'],
   system: ['pickFolder', 'openPath', 'revealInExplorer'],
   updates: ['check', 'install', 'onStatus'],
-  app: ['version', 'logsPath', 'onDeepLink'],
+  app: ['version', 'logsPath', 'copyDiagnosticReport', 'onDeepLink'],
 };
 
 describe('the preload bridge', () => {
@@ -117,6 +117,8 @@ describe('the preload bridge', () => {
     await bridge.updates.install();
     await bridge.app.version();
     await bridge.app.logsPath();
+    await bridge.app.copyDiagnosticReport();
+    await bridge.core.restart();
     bridge.window.minimize();
     bridge.window.maximize();
     bridge.window.close();

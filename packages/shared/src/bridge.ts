@@ -117,6 +117,17 @@ export interface AegisBridge {
      * validated by the renderer's store.
      */
     subscribe(listener: (message: CoreStreamMessage) => void): Unsubscribe;
+    /**
+     * Starts the core again after the supervisor gave up (`RECOVERY.md § 4`,
+     * P0-17). Takes no argument: the renderer asks for a restart, it never says
+     * what to run — the launch spec lives in MAIN.
+     *
+     * Resolves `ok` once the core is **running**, and fails if the attempts are
+     * spent again — resolving either way would tell the screen the engine is
+     * back while it is still looking at a dead one. A restart already in flight
+     * is joined, not started twice.
+     */
+    restart(): Promise<BridgeResult<null>>;
   };
 
   readonly window: {
@@ -166,6 +177,16 @@ export interface AegisBridge {
   readonly app: {
     version(): Promise<string>;
     logsPath(): Promise<string>;
+    /**
+     * Puts `RECOVERY.md § 4`'s diagnostic report on the clipboard: versions, the
+     * engine's state, and the last 200 log lines with the user's home paths and
+     * anything key-shaped redacted (P0-17).
+     *
+     * MAIN writes the clipboard itself rather than handing the text back,
+     * because log lines will carry text the agent scraped off the user's screen
+     * once P2 lands, and the renderer has no reason to hold it.
+     */
+    copyDiagnosticReport(): Promise<BridgeResult<null>>;
     onDeepLink(listener: (url: string) => void): Unsubscribe;
   };
 }

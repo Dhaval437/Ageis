@@ -113,7 +113,7 @@ The HUD exists because the agent is driving the user's actual desktop — the ma
 - **Scope selector** — which folders/apps the agent may touch this task. Shows the scope name; the dropdown lists folders with a "Manage scopes…" link. Changing scope mid-task is disabled (shows why on hover).
 - **Autonomy selector** — Observe / Guided / Standard / Trusted, with a one-line description under each. Changing to a *more* permissive level while a task runs requires re-confirmation.
 - **Status dot**: grey idle · blue running · amber waiting-for-you · red stopped/error · purple blocked-by-policy.
-- **Engine note** (P0-09), beside the name and only while the event stream is not live: *Starting the engine…* before the first connection, *Reconnecting…* after one, and *The engine is not running.* with a red dot once the supervisor gives up. It is a `role="status"` region. The full Engine-unavailable screen is P0-17.
+- **Engine note** (P0-09), beside the name and only while the event stream is not live: *Starting the engine…* before the first connection, *Reconnecting…* after one, and *The engine is not running.* with a red dot once the supervisor gives up. It is a `role="status"` region, and it stays while the Engine-unavailable screen (P0-17) fills the panel: the dot is the app-wide status, the screen is what to do about it.
 - **Window controls** — minimise, maximise/restore and close, outside the drag region, driven through `window.aegis.window` (P0-04, maximise added in P0-15 under a `REVIEW.md § 5` review). The middle control is labelled *Maximise* with a `Square` icon, and *Restore* with a `Copy` (two overlapping squares) icon once the window is maximised — label and icon, never the icon alone. Which of the two it is comes from MAIN, pushed over `window.onMaximizedChange`, because double-clicking the drag region and `Win`+`↑` also maximise the window and the titlebar must not show a state it guessed.
 
 ### 4.2 The step card (the most important component in the app)
@@ -249,7 +249,7 @@ Five steps, skippable only at step 5: Welcome → **How Aegis keeps you safe** (
 | State | Treatment |
 |---|---|
 | No model configured | Home composer disabled with an inline card: "Connect a model to get started → Set up". Never a silent failure. |
-| Core not running | Full-panel recovery card: what happened, `Restart engine` button, `Open logs`. Follows `RECOVERY.md § 4`. |
+| Core not running | **`EngineUnavailable`** (P0-17) takes the whole conversation panel the moment the stream reports `unavailable`: the `RECOVERY.md § 4` copy verbatim, then `Restart engine` / `Open logs` / `Copy report`, then the common-causes line. Every action is disabled while one is in flight, and its outcome is announced in an `aria-live="polite"` line — failures say what to try next, and `Copy report` confirms itself because the clipboard shows nothing. `Restart engine` usually makes the screen vanish within a frame (the connection stops being `unavailable` and the titlebar says *Reconnecting…*); it comes back, with the failure notice, if that restart runs out of attempts too. |
 | Model error (429/timeout) | Inline in the step card, amber, with the fallback that was tried and a `Retry` button. |
 | Blocked by policy | Purple step card: "Blocked — Aegis will never do this" + the rule name + link to Rules. Not framed as an error the user should fix. |
 | Agent stuck | Amber card: "I've tried the same thing 3 times without progress" + last screenshot + `Give it a hint` input + `Stop`. |

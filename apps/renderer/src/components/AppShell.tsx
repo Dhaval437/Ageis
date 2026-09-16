@@ -12,6 +12,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
+import { EngineUnavailable } from '@/components/EngineUnavailable';
 import { Button } from '@/components/ui/button';
 import { engineStatusView } from '@/lib/engine-status';
 import { cn } from '@/lib/utils';
@@ -49,6 +50,9 @@ const SECTIONS: readonly [Section, ...Section[]] = [
 export function AppShell(): ReactElement {
   const [activeId, setActiveId] = useState<string>(SECTIONS[0].id);
   const active = SECTIONS.find((section) => section.id === activeId) ?? SECTIONS[0];
+  // `UI.md § 9`, "Core not running": the recovery card takes the whole panel,
+  // because nothing else in it can do anything while the engine is gone.
+  const engineGone = useStreamStore((state) => state.connection) === 'unavailable';
 
   return (
     <div className="flex h-full flex-col bg-bg text-text">
@@ -56,10 +60,14 @@ export function AppShell(): ReactElement {
       <div className="flex min-h-0 flex-1">
         <Rail activeId={active.id} onSelect={setActiveId} />
         <main
-          className="flex min-w-0 flex-1 items-center justify-center border-r border-border p-6"
+          className="flex min-w-0 flex-1 items-center justify-center border-r border-border"
           aria-live="polite"
         >
-          <p className="text-base text-text-dim">{active.empty}</p>
+          {engineGone ? (
+            <EngineUnavailable />
+          ) : (
+            <p className="p-6 text-base text-text-dim">{active.empty}</p>
+          )}
         </main>
         <LiveView />
       </div>
@@ -87,7 +95,8 @@ function Titlebar(): ReactElement {
 
 /**
  * The titlebar's status dot and, while the engine is not live, a short note.
- * The full Engine-unavailable screen (`RECOVERY.md § 4`) is P0-17.
+ * The note stays even when `EngineUnavailable` fills the panel: the dot is the
+ * app-wide status and the screen is what to do about it.
  */
 function EngineStatus(): ReactElement {
   const connection = useStreamStore((state) => state.connection);

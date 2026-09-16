@@ -36,6 +36,23 @@ export interface CoreGateway {
   readonly request: (request: CoreRequest) => Promise<CoreResponse>;
 }
 
+/**
+ * The core's lifecycle, as much of it as the renderer may touch: one verb, no
+ * arguments (P0-17). The launch spec, the attempt budget and the kill stay in
+ * the supervisor — a renderer that could name what to start would be a way to
+ * run a program.
+ */
+export interface CoreControl {
+  /** Resolves when the core is running again, or the attempts are spent. */
+  readonly restart: () => Promise<void>;
+}
+
+/** The `Copy report` bundle from `RECOVERY.md § 4` (P0-17). */
+export interface DiagnosticsService {
+  /** Builds the redacted report and puts it on the clipboard. */
+  readonly copyReport: () => Promise<void>;
+}
+
 /** Global shortcuts (P3-06). */
 export interface HotkeyService {
   readonly get: () => HotkeyMap;
@@ -88,6 +105,9 @@ export interface AppInfo {
  */
 export interface BridgeDependencies {
   readonly core: () => CoreGateway | null;
+  /** The supervisor, once there is one. */
+  readonly coreControl: () => CoreControl | null;
+  readonly diagnostics: () => DiagnosticsService | null;
   readonly window: () => WindowService | null;
   readonly hotkeys: () => HotkeyService | null;
   readonly system: () => SystemService | null;
@@ -98,6 +118,8 @@ export interface BridgeDependencies {
 
 export interface BridgeHandlers {
   readonly coreRequest: (input: unknown) => Promise<BridgeResult<CoreResponse>>;
+  /** Starts the core again after the supervisor gave up (P0-17). */
+  readonly coreRestart: () => Promise<BridgeResult<null>>;
   readonly windowMinimize: () => void;
   /** Maximises the window, or restores it if it already is (P0-15). */
   readonly windowMaximize: () => void;
@@ -112,6 +134,8 @@ export interface BridgeHandlers {
   readonly updatesInstall: () => Promise<BridgeResult<null>>;
   readonly appVersion: () => Promise<string>;
   readonly appLogsPath: () => Promise<string>;
+  /** Puts the redacted diagnostic report on the clipboard (P0-17). */
+  readonly appCopyDiagnosticReport: () => Promise<BridgeResult<null>>;
 }
 
 const CORE_METHODS: readonly string[] = ['GET', 'POST', 'PUT', 'DELETE'];
@@ -221,6 +245,17 @@ export function createBridgeHandlers(deps: BridgeDependencies): BridgeHandlers {
       }
     },
 
+    coreRestart: async (): Promise<BridgeResult<null>> => {
+      const control = deps.coreControl();
+      if (control === null) return fail('unavailable', UNAVAILABLE);
+      try {
+        await control.restart();
+        return ok(null);
+      } catch (error: unknown) {
+        return { ok: false, error: failedFrom(error) };
+      }
+    },
+
     windowMinimize: (): void => {
       deps.window()?.minimize();
     },
@@ -321,5 +356,16 @@ export function createBridgeHandlers(deps: BridgeDependencies): BridgeHandlers {
     appVersion: (): Promise<string> => Promise.resolve(deps.appInfo.version()),
 
     appLogsPath: (): Promise<string> => Promise.resolve(deps.appInfo.logsPath()),
+
+    appCopyDiagnosticReport: async (): Promise<BridgeResult<null>> => {
+      const diagnostics = deps.diagnostics();
+      if (diagnostics === null) return fail('unavailable', UNAVAILABLE);
+      try {
+        await diagnostics.copyReport();
+        return ok(null);
+      } catch (error: unknown) {
+        return { ok: false, error: failedFrom(error) };
+      }
+    },
   };
 }

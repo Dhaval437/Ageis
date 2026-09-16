@@ -152,8 +152,31 @@ function bootstrap(): void {
           // Null while the core is down, which is how the renderer learns to
           // show "Reconnecting…" instead of a request that never returns.
           core: () => supervisor?.gateway() ?? null,
+          // `Restart engine` on the Engine-unavailable screen (P0-17).
+          coreControl: () =>
+            supervisor === null
+              ? null
+              : {
+                  restart: async (): Promise<void> => {
+                    const state = await supervisor?.restart();
+                    // Resolving on a core that never came up would tell the
+                    // Engine-unavailable screen the restart worked while it is
+                    // still looking at a dead engine.
+                    if (state?.status !== 'running') {
+                      throw new Error('The engine did not start.');
+                    }
+                  },
+                },
           hotkeys: () => null,
           updates: () => null,
+        },
+        engineState: () => {
+          const state = supervisor?.state() ?? null;
+          return {
+            status: state?.status ?? 'stopped',
+            attempts: state?.attempts ?? 0,
+            lastError: state?.lastError ?? null,
+          };
         },
       });
 
@@ -210,8 +233,9 @@ function availabilityOf(state: SupervisorState): CoreAvailability {
 function onSupervisorState(state: SupervisorState): void {
   coreStream?.setAvailability(availabilityOf(state));
   if (state.status === 'unavailable') {
-    // The renderer now hears `unavailable` over the stream; RECOVERY.md § 4's
-    // Engine-unavailable screen that acts on it is P0-17.
+    // The renderer hears `unavailable` over the stream and shows RECOVERY.md
+    // § 4's Engine-unavailable screen, whose `Restart engine` comes back here
+    // through `core.restart` (P0-17).
     console.error('[main] the core is unavailable:', state.lastError ?? 'unknown reason');
   }
 }
