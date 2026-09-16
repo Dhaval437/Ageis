@@ -12,7 +12,7 @@ import socket
 from collections.abc import Iterator
 
 import pytest
-from aegis_core.server.auth import is_supervised_by, resolve_peer_pid
+from aegis_core.server.auth import SessionAuth, resolve_peer_pid
 from aegis_core.server.handshake import LOOPBACK, bind_loopback
 
 
@@ -44,11 +44,17 @@ def test_resolves_the_connecting_process(connected: tuple[int, int]) -> None:
 
 
 def test_the_resolved_process_passes_the_supervision_rule(connected: tuple[int, int]) -> None:
-    """End to end: this connection would be accepted by a core we supervise."""
+    """End to end: this connection would be accepted by a core we supervise.
+
+    Both ends are in this process, so the real resolver, the real connection
+    table and the real PID-plus-creation-time identity all have to agree.
+    """
     local_port, peer_port = connected
     pid = resolve_peer_pid(local_port, peer_port)
+    auth = SessionAuth(token="t" * 64, supervisor_pid=os.getpid(), local_port=local_port)
+
     assert pid is not None
-    assert is_supervised_by(pid, os.getpid()) is True
+    assert auth.is_the_supervisor(pid) is True
 
 
 def test_an_unconnected_peer_port_resolves_to_nothing(connected: tuple[int, int]) -> None:

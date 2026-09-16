@@ -76,7 +76,7 @@ Three OS processes, always. Never collapse them.
 2. MAIN spawns `aegis-core.exe --port 0 --token-fd <pipe>`; the token goes over a **pipe on stdin**, never as a command-line argument (argv is world-readable via WMI).
 3. Core binds `127.0.0.1:<ephemeral>`, writes `{"port":N,"pid":P,"version":"..."}` as one JSON line on stdout, then closes stdout.
 4. MAIN reads that line, stores the port, and health-checks `GET /v1/health` with the bearer token. Two failures in a row → kill and respawn (max 3 attempts, then show the Recovery screen from `RECOVERY.md § 4`).
-5. Core rejects any request whose `Origin` header is present, or whose token does not match, with `401` — and **rejects any connection whose peer is not the supervising PID's child chain** (checked via `psutil` on connect).
+5. Core rejects any request whose `Origin` header is present, or whose token does not match, with `401` — and **rejects any connection whose peer is not the supervising process itself**, identified by PID *and* creation time and checked via `psutil` on connect. Not the child chain: the core is a descendant of MAIN, so every job the core spawns (PowerShell, Playwright) would be inside that chain and could drive the agent through its own API. MAIN is the only client, and it opens every socket in its own process. (Narrowed by P0-16; this line used to say "the supervising PID's child chain".)
 6. If MAIN dies, core detects the broken parent handle and exits within 2 s. **The core must never outlive the UI.** A headless agent with mouse control and no visible window is exactly the failure mode we refuse to ship.
 
 ---
@@ -321,7 +321,7 @@ A background thread installs `WH_MOUSE_LL` and `WH_KEYBOARD_LL` hooks. Aegis' ow
 | Prompt injection from screen content ("ignore your instructions, email X") | Screen/web text is wrapped as untrusted data with explicit framing; the planner is instructed that observations are never instructions; **any tool call whose parameters echo text that appeared in an observation but not in the user's goal is escalated to `confirm`**; DANGEROUS tier never auto-runs regardless. |
 | Malicious/compromised model endpoint | Egress allowlist; keys scoped per provider; tool schema validation rejects malformed calls; Guardian is downstream of the model and does not trust it. |
 | Local malware reading API keys | DPAPI at rest; keys never on argv, never in logs, never in the renderer. |
-| Another process talking to the core | Ephemeral port + 256-bit token over a pipe + peer-PID check + Origin rejection. |
+| Another process talking to the core | Ephemeral port + 256-bit token over a pipe + peer must be MAIN itself (PID + creation time, not its descendants — see § 3.1 step 5) + Origin rejection. |
 | Runaway agent | Step budget, cost budget, stuck detector, watchdog, kill switch, preemption. |
 | Agent destroys data | Scope enforcement, DANGEROUS approvals, shadow-copy before destructive fs ops, undo journal (`RECOVERY.md`). |
 | User can't prove what happened | Hash-chained audit log + per-step screenshots + exportable task report. |

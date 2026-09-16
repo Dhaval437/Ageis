@@ -8,15 +8,19 @@ hold while the suite runs. `test_peer_lookup.py` covers the real resolver.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from collections.abc import Iterator
 
+import psutil
 import pytest
+from aegis_core.parent_watch import GONE, UNIDENTIFIED, Identity
 from aegis_core.server.app import create_app
 from aegis_core.server.auth import (
     PeerLookupError,
     PeerResolver,
+    ProcessIdentifier,
     SessionAuth,
-    is_supervised_by,
 )
 from fastapi.testclient import TestClient
 
@@ -27,10 +31,18 @@ OTHER_TOKEN = "b" * 64
 TRUSTED_PEER_PORT = 50000
 SUPERVISOR_PID = 4242
 
+#: MAIN's creation time. Any float will do; what matters is that it is stable.
+SUPERVISOR_STARTED_AT = 1_700_000_000.0
+
 
 def _resolver(local_port: int, peer_port: int) -> int | None:
     """Every peer resolves to MAIN itself, so only the other checks can fail."""
     return SUPERVISOR_PID
+
+
+def _identifier(pid: int) -> Identity:
+    """`SUPERVISOR_PID` is alive and unchanged; every other PID is gone."""
+    return SUPERVISOR_STARTED_AT if pid == SUPERVISOR_PID else GONE
 
 
 def make_auth(
@@ -38,12 +50,14 @@ def make_auth(
     token: str = TOKEN,
     supervisor_pid: int = SUPERVISOR_PID,
     resolve_peer: PeerResolver = _resolver,
+    identify: ProcessIdentifier = _identifier,
 ) -> SessionAuth:
     return SessionAuth(
         token=token,
         supervisor_pid=supervisor_pid,
         local_port=1234,
         resolve_peer=resolve_peer,
+        identify=identify,
     )
 
 
@@ -205,18 +219,78 @@ def test_a_lookup_failure_is_not_cached() -> None:
     assert auth.peer_is_trusted(peer) is True
 
 
-def test_this_process_is_supervised_by_itself() -> None:
-    assert is_supervised_by(os.getpid(), os.getpid()) is True
+# --------------------------------------------------------------------------- #
+# The supervisor rule (P0-16): the peer must be MAIN, not a relative of MAIN
+# --------------------------------------------------------------------------- #
 
 
-def test_this_process_is_supervised_by_its_parent() -> None:
-    assert is_supervised_by(os.getpid(), os.getppid()) is True
+def test_the_supervisor_itself_is_trusted() -> None:
+    auth = SessionAuth(token=TOKEN, supervisor_pid=os.getpid(), local_port=1234)
+
+    assert auth.is_the_supervisor(os.getpid()) is True
 
 
-def test_an_unrelated_pid_is_not_supervised() -> None:
-    """PID 0 is never anyone's ancestor on Windows."""
-    assert is_supervised_by(os.getpid(), 0) is False
+def test_a_job_the_core_spawns_cannot_call_the_core() -> None:
+    """The whole point of P0-16, against real processes.
+
+    This test process stands in for the core, its parent for MAIN, and the child
+    below for a PowerShell or Playwright job the agent starts. That child really
+    is inside MAIN's descendant chain — asserted here, so the test cannot quietly
+    stop covering the case — and the old "child chain" rule would have admitted
+    it, letting a compromised job drive the agent through the agent's own API.
+    """
+    main_pid = os.getppid()
+    job = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        ancestors = {parent.pid for parent in psutil.Process(job.pid).parents()}
+        assert os.getpid() in ancestors, "the job must be below the core for this to mean anything"
+        assert main_pid in ancestors, "the job must be below MAIN for this to mean anything"
+
+        auth = SessionAuth(token=TOKEN, supervisor_pid=main_pid, local_port=1234)
+        assert auth.is_the_supervisor(job.pid) is False
+        assert auth.is_the_supervisor(os.getpid()) is False, "nor is the core itself"
+    finally:
+        job.kill()
+        job.wait(timeout=30)
 
 
-def test_a_dead_pid_is_not_supervised() -> None:
-    assert is_supervised_by(0x7FFFFFFF, os.getpid()) is False
+def test_an_unrelated_pid_is_never_the_supervisor() -> None:
+    assert make_auth().is_the_supervisor(999999) is False
+
+
+def test_a_supervisor_that_has_died_is_not_trusted() -> None:
+    """Its PID is a free slot now, and a free slot is not MAIN."""
+    assert make_auth(identify=lambda _pid: GONE).is_the_supervisor(SUPERVISOR_PID) is False
+
+
+def test_a_recycled_pid_does_not_pass_for_the_supervisor() -> None:
+    """Same PID, different creation time — Windows handed the number to someone else."""
+    auth = make_auth()
+    auth.identify = lambda _pid: SUPERVISOR_STARTED_AT + 1
+
+    assert auth.is_the_supervisor(SUPERVISOR_PID) is False
+
+
+def test_a_supervisor_the_os_will_not_describe_is_still_trusted_on_its_pid() -> None:
+    """`AccessDenied` must not lock MAIN out of its own core (see `identities_match`)."""
+    auth = make_auth(identify=lambda _pid: UNIDENTIFIED)
+
+    assert auth.is_the_supervisor(SUPERVISOR_PID) is True
+    assert auth.is_the_supervisor(SUPERVISOR_PID + 1) is False
+
+
+def test_a_job_with_a_valid_token_gets_the_same_bare_401() -> None:
+    """End to end through the middleware, not just the rule."""
+
+    def a_job_the_core_spawned(local_port: int, peer_port: int) -> int | None:
+        return SUPERVISOR_PID + 7
+
+    with TestClient(create_app(make_auth(resolve_peer=a_job_the_core_spawned))) as client:
+        response = client.get("/v1/health", headers=AUTHORIZED)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "unauthorized"}
