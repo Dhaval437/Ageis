@@ -60,7 +60,7 @@ async function loadBridge(): Promise<AegisBridge> {
 /** The surface fixed by `ARCHITECTURE.md § 9.3`. Growing it is a `REVIEW.md § 5` item. */
 const SURFACE: Record<string, readonly string[]> = {
   core: ['request', 'subscribe'],
-  window: ['minimize', 'close', 'setOverlay'],
+  window: ['minimize', 'maximize', 'close', 'onMaximizedChange', 'setOverlay'],
   hotkeys: ['get', 'set'],
   system: ['pickFolder', 'openPath', 'revealInExplorer'],
   updates: ['check', 'install', 'onStatus'],
@@ -118,8 +118,10 @@ describe('the preload bridge', () => {
     await bridge.app.version();
     await bridge.app.logsPath();
     bridge.window.minimize();
+    bridge.window.maximize();
     bridge.window.close();
     bridge.core.subscribe(() => undefined);
+    bridge.window.onMaximizedChange(() => undefined);
     bridge.updates.onStatus(() => undefined);
     bridge.app.onDeepLink(() => undefined);
 
@@ -148,8 +150,26 @@ describe('the preload bridge', () => {
   it('uses fire-and-forget sends for the window controls, which return nothing', () => {
     bridge.window.minimize();
     expect(ipc.send).toHaveBeenCalledWith(SEND_CHANNELS.windowMinimize);
+    bridge.window.maximize();
+    expect(ipc.send).toHaveBeenCalledWith(SEND_CHANNELS.windowMaximize);
     bridge.window.close();
     expect(ipc.send).toHaveBeenCalledWith(SEND_CHANNELS.windowClose);
+  });
+
+  it('carries the pushed maximised state, and nothing else, to the renderer', () => {
+    const listener = vi.fn();
+    const unsubscribe = bridge.window.onMaximizedChange(listener);
+    const registered = ipc.on.mock.calls.find(
+      ([channel]) => channel === EVENT_CHANNELS.windowMaximized,
+    );
+    const wrapped = registered?.[1];
+    if (wrapped === undefined) throw new Error('the preload registered no listener');
+
+    wrapped({ sender: 'the whole ipcRenderer' }, true);
+    expect(listener).toHaveBeenCalledExactlyOnceWith(true);
+
+    unsubscribe();
+    expect(ipc.removeListener).toHaveBeenCalledWith(EVENT_CHANNELS.windowMaximized, wrapped);
   });
 
   it('never hands the renderer the IpcRendererEvent, which carries a sender handle', () => {

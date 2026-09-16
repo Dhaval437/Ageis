@@ -25,12 +25,14 @@ export const INVOKE_CHANNELS = {
 /** Renderer→MAIN, fire-and-forget. Nothing here may return data. */
 export const SEND_CHANNELS = {
   windowMinimize: 'aegis:window:minimize',
+  windowMaximize: 'aegis:window:maximize',
   windowClose: 'aegis:window:close',
 } as const;
 
 /** MAIN→renderer, pushed. The UI is a pure function of these (invariant 15). */
 export const EVENT_CHANNELS = {
   coreEvent: 'aegis:core:event',
+  windowMaximized: 'aegis:window:maximized',
   updatesStatus: 'aegis:updates:status',
   appDeepLink: 'aegis:app:deep-link',
 } as const;

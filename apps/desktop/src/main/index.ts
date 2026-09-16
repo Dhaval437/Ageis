@@ -60,11 +60,12 @@ function toggleMainWindow(): void {
 }
 
 function openMainWindow(): void {
-  mainWindow = createMainWindow({
+  const window = createMainWindow({
     isPackaged: app.isPackaged,
     devServerUrl: process.env['AEGIS_RENDERER_URL'],
     appPath: app.getAppPath(),
   });
+  mainWindow = window;
 
   mainWindow.on('show', () => {
     setTrayState({ windowVisible: true });
@@ -72,10 +73,21 @@ function openMainWindow(): void {
   mainWindow.on('hide', () => {
     setTrayState({ windowVisible: false });
   });
+  // The `□` button is not the only way the window gets maximised — a
+  // double-click on the drag region, `Win`+`↑` and Aero snap all do it — so the
+  // titlebar is told about the state rather than left to assume it (P0-15).
+  mainWindow.on('maximize', () => {
+    bridge?.send.windowMaximized(true);
+  });
+  mainWindow.on('unmaximize', () => {
+    bridge?.send.windowMaximized(false);
+  });
   // Fires on the first load and on every reload: whatever the page had been told
-  // died with it, so the stream starts over and replays what the core retains.
+  // died with it, so the stream starts over and replays what the core retains,
+  // and the fresh page is told the window state it cannot have seen change.
   mainWindow.webContents.on('did-finish-load', () => {
     coreStream?.restart();
+    bridge?.send.windowMaximized(window.isMaximized());
   });
   mainWindow.on('closed', () => {
     mainWindow = null;

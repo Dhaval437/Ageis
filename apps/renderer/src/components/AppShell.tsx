@@ -1,5 +1,6 @@
 import { useState, type ReactElement } from 'react';
 import {
+  Copy,
   Cpu,
   History,
   ListTodo,
@@ -7,6 +8,7 @@ import {
   ScrollText,
   Settings,
   Shield,
+  Square,
   X,
   type LucideIcon,
 } from 'lucide-react';
@@ -14,12 +16,14 @@ import { Button } from '@/components/ui/button';
 import { engineStatusView } from '@/lib/engine-status';
 import { cn } from '@/lib/utils';
 import { useStreamStore } from '@/stores/stream';
+import { useWindowStore } from '@/stores/window';
 
 /**
  * The main-window frame from `UI.md § 4`: titlebar, 64px rail, flexible
  * conversation column, 360px live view, composer.
  *
- * The frame is P0-03; window controls are live as of P0-04. The titlebar's
+ * The frame is P0-03; window controls are live as of P0-04, maximise/restore as
+ * of P0-15. The titlebar's
  * status reads the event-stream store (P0-09); the timeline, live view and
  * composer read it too once they have events to show (P4-11).
  */
@@ -107,12 +111,15 @@ function EngineStatus(): ReactElement {
 }
 
 /**
- * The `– ×` of the `UI.md § 4.1` sketch. Maximise is missing on purpose: the
- * bridge surface in `ARCHITECTURE.md § 9.3` has `minimize` and `close` and
- * nothing else, and widening it is a `REVIEW.md § 5` item, so it is tracked as
- * P0-15 rather than smuggled in here.
+ * The `– □ ×` of the `UI.md § 4.1` sketch. The middle button restores instead of
+ * maximising once the window is maximised, and which one it is comes from MAIN
+ * (P0-15) — the window can also be maximised by double-clicking the drag region
+ * or by `Win`+`↑`, neither of which passes through here.
  */
 function WindowControls(): ReactElement {
+  const maximized = useWindowStore((state) => state.maximized);
+  const control =
+    'flex size-7 items-center justify-center rounded-control text-text-dim transition-colors duration-120 ease-out hover:bg-surface-2 hover:text-text';
   return (
     <div className="app-no-drag ml-1 flex items-center">
       <button
@@ -121,9 +128,23 @@ function WindowControls(): ReactElement {
         onClick={() => {
           window.aegis.window.minimize();
         }}
-        className="flex size-7 items-center justify-center rounded-control text-text-dim transition-colors duration-120 ease-out hover:bg-surface-2 hover:text-text"
+        className={control}
       >
         <Minus className="size-4" aria-hidden />
+      </button>
+      <button
+        type="button"
+        aria-label={maximized ? 'Restore' : 'Maximise'}
+        onClick={() => {
+          window.aegis.window.maximize();
+        }}
+        className={control}
+      >
+        {maximized ? (
+          <Copy className="size-4" aria-hidden />
+        ) : (
+          <Square className="size-4" aria-hidden />
+        )}
       </button>
       <button
         type="button"

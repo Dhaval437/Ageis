@@ -378,7 +378,7 @@ Wire details (P0-08, `server/hub.py` + `server/routes.py`; model `StreamEvent` i
 ```ts
 window.aegis = {
   core: { request, subscribe },            // proxied, token added in MAIN
-  window: { minimize, close, setOverlay },
+  window: { minimize, maximize, close, onMaximizedChange, setOverlay },
   hotkeys: { get, set },
   system: { pickFolder, openPath, revealInExplorer },
   updates: { check, install, onStatus },
@@ -411,6 +411,14 @@ pushes a `CoreStreamMessage` envelope over the `aegis:core:event` channel:
 | `event` | one `§ 9.2` event, as `unknown` | validates it (`lib/stream-event.ts`), applies it if `seq` is new |
 | `reset` | nothing | drops everything derived from the stream; a full replay follows |
 | `connection` | `connecting` / `live` / `down` / `unavailable` | shows it; `unavailable` drives P0-17's screen |
+
+**`window.maximize` / `window.onMaximizedChange`** (P0-15). `maximize()` is one
+toggle, not a maximise/restore pair: MAIN owns the window, so it decides which
+way the `□` flips and the renderer cannot desynchronise the two. Because a
+frameless window is also maximised by double-clicking the drag region, by
+`Win`+`↑` and by Aero snap, MAIN **pushes** the state on Electron's `maximize`
+and `unmaximize` events, and again on `did-finish-load` so a fresh page starts
+from the truth rather than a guess. It carries one boolean and no user data.
 
 MAIN sends `reset` when the supervisor starts a **different** core (new token), when
 the core closes with `4410`/`4400`/`1003`, and on every renderer page load

@@ -24,7 +24,11 @@ export const storyBridge: AegisBridge = {
   },
   window: {
     minimize: noop,
+    maximize: noop,
     close: noop,
+    // Stories set the maximised state through the window store, as they do
+    // every other state, so the bridge never pushes one.
+    onMaximizedChange: () => noop,
     setOverlay: unavailable,
   },
   hotkeys: {

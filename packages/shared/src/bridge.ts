@@ -121,7 +121,23 @@ export interface AegisBridge {
 
   readonly window: {
     minimize(): void;
+    /**
+     * Maximises the window, or restores it if it is already maximised (P0-15).
+     * One toggle rather than a pair, because the `□` button is one button and
+     * MAIN owns the window state either way.
+     */
+    maximize(): void;
     close(): void;
+    /**
+     * Whether the window is maximised right now, pushed on every change —
+     * including the ones the renderer did not cause: double-clicking the drag
+     * region, `Win`+`↑`, and Aero snap all maximise a frameless window. Without
+     * this the `□`/`❐` button would show a state it only guessed at.
+     *
+     * MAIN also pushes the current value when the page finishes loading, so a
+     * listener registered before the first render always gets an answer.
+     */
+    onMaximizedChange(listener: (maximized: boolean) => void): Unsubscribe;
     /** Shows or hides the `OverlayHUD` window (P3-13). */
     setOverlay(visible: boolean): Promise<BridgeResult<null>>;
   };

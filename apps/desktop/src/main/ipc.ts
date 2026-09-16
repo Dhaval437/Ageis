@@ -54,6 +54,8 @@ export interface BridgeIpc {
 
 export interface BridgeSender {
   coreEvent(message: CoreStreamMessage): void;
+  /** The titlebar's `□`/`❐` state (P0-15). Pushed, never asked for. */
+  windowMaximized(maximized: boolean): void;
   updateStatus(status: UpdateStatus): void;
   deepLink(url: string): void;
 }
@@ -100,6 +102,11 @@ function windowService(services: BridgeServices): WindowService | null {
   return {
     minimize: () => {
       window.minimize();
+    },
+    isMaximized: () => window.isMaximized(),
+    setMaximized: (maximized: boolean) => {
+      if (maximized) window.maximize();
+      else window.unmaximize();
     },
     close: () => {
       window.close();
@@ -198,6 +205,7 @@ function register(handlers: BridgeHandlers, services: BridgeServices): void {
   invoke(INVOKE_CHANNELS.appLogsPath, handlers.appLogsPath, '');
 
   send(SEND_CHANNELS.windowMinimize, handlers.windowMinimize);
+  send(SEND_CHANNELS.windowMaximize, handlers.windowMaximize);
   send(SEND_CHANNELS.windowClose, handlers.windowClose);
 }
 
@@ -211,6 +219,9 @@ function createBridgeSender(getWindow: () => BrowserWindow | null): BridgeSender
   return {
     coreEvent: (message: CoreStreamMessage) => {
       to(EVENT_CHANNELS.coreEvent, message);
+    },
+    windowMaximized: (maximized: boolean) => {
+      to(EVENT_CHANNELS.windowMaximized, maximized);
     },
     updateStatus: (status: UpdateStatus) => {
       to(EVENT_CHANNELS.updatesStatus, status);

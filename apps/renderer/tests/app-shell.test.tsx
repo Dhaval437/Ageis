@@ -2,16 +2,18 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '@/components/AppShell';
 import { INITIAL_STREAM, useStreamStore } from '@/stores/stream';
+import { INITIAL_WINDOW, useWindowStore } from '@/stores/window';
 
 /**
  * The preload injects `window.aegis` before any renderer code runs. jsdom has
  * no preload, so the two methods the shell actually calls are stubbed here.
  */
-const windowBridge = { minimize: vi.fn(), close: vi.fn() };
+const windowBridge = { minimize: vi.fn(), maximize: vi.fn(), close: vi.fn() };
 
 beforeEach(() => {
   vi.clearAllMocks();
   useStreamStore.setState(INITIAL_STREAM);
+  useWindowStore.setState(INITIAL_WINDOW);
   vi.stubGlobal('aegis', { window: windowBridge });
 });
 
@@ -58,13 +60,35 @@ describe('AppShell', () => {
     expect(windowBridge.minimize).toHaveBeenCalledOnce();
     expect(windowBridge.close).not.toHaveBeenCalled();
 
+    fireEvent.click(screen.getByRole('button', { name: 'Maximise' }));
+    expect(windowBridge.maximize).toHaveBeenCalledOnce();
+
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(windowBridge.close).toHaveBeenCalledOnce();
   });
 
+  it('offers Restore instead of Maximise once MAIN says the window is maximised', () => {
+    render(<AppShell />);
+    expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument();
+
+    act(() => {
+      useWindowStore.getState().setMaximized(true);
+    });
+    expect(screen.queryByRole('button', { name: 'Maximise' })).not.toBeInTheDocument();
+
+    // Restoring goes through the same one toggle: MAIN owns which way it flips.
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+    expect(windowBridge.maximize).toHaveBeenCalledOnce();
+
+    act(() => {
+      useWindowStore.getState().setMaximized(false);
+    });
+    expect(screen.getByRole('button', { name: 'Maximise' })).toBeInTheDocument();
+  });
+
   it('keeps the window controls out of the drag region, or they cannot be clicked', () => {
     render(<AppShell />);
-    for (const name of ['Minimise', 'Close']) {
+    for (const name of ['Minimise', 'Maximise', 'Close']) {
       expect(screen.getByRole('button', { name }).closest('.app-no-drag'), name).not.toBeNull();
     }
   });

@@ -1,6 +1,7 @@
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import type { AegisStoryParameters } from '../../.storybook/states';
 import { INITIAL_STREAM, useStreamStore, type StreamSnapshot } from '@/stores/stream';
+import { useWindowStore } from '@/stores/window';
 import { AppShell } from './AppShell';
 
 /** The window the shell lives in: the default size, or the minimum (`UI.md § 3`). */
@@ -62,4 +63,12 @@ export const LongestContent: Story = {
 /** The engine was live and dropped: "Reconnecting…". */
 export const Reconnecting: Story = {
   beforeEach: streamState({ connection: 'down', hasBeenLive: true }),
+};
+
+/** Maximised, so the middle window control is Restore rather than Maximise (P0-15). */
+export const Maximised: Story = {
+  beforeEach: () => {
+    useStreamStore.setState({ ...INITIAL_STREAM, connection: 'live', hasBeenLive: true });
+    useWindowStore.setState({ maximized: true });
+  },
 };

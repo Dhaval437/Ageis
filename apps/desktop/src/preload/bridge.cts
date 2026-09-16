@@ -65,9 +65,14 @@ const bridge: AegisBridge = {
     minimize: (): void => {
       ipcRenderer.send('aegis:window:minimize');
     },
+    maximize: (): void => {
+      ipcRenderer.send('aegis:window:maximize');
+    },
     close: (): void => {
       ipcRenderer.send('aegis:window:close');
     },
+    onMaximizedChange: (listener: (maximized: boolean) => void): Unsubscribe =>
+      on<boolean>('aegis:window:maximized', listener),
     setOverlay: async (visible: boolean): Promise<BridgeResult<null>> =>
       (await ipcRenderer.invoke('aegis:window:set-overlay', visible)) as BridgeResult<null>,
   },

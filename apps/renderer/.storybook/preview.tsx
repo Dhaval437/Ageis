@@ -1,5 +1,6 @@
 import type { Decorator, Preview } from '@storybook/react-vite';
 import { INITIAL_STREAM, useStreamStore } from '../src/stores/stream';
+import { INITIAL_WINDOW, useWindowStore } from '../src/stores/window';
 import { installStoryBridge } from './story-bridge';
 import '../src/index.css';
 
@@ -33,9 +34,11 @@ const preview: Preview = {
   },
   initialGlobals: { theme: 'dark' },
   decorators: [withTheme],
-  // Every story starts from an empty stream; a story that needs state sets it.
+  // Every story starts from an empty stream and a restored window; a story that
+  // needs state sets it.
   beforeEach: () => {
     useStreamStore.setState(INITIAL_STREAM);
+    useWindowStore.setState(INITIAL_WINDOW);
   },
   parameters: {
     layout: 'fullscreen',

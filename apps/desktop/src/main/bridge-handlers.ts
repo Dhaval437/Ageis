@@ -51,6 +51,13 @@ export interface UpdateService {
 
 export interface WindowService {
   readonly minimize: () => void;
+  /**
+   * Read and written separately, rather than as one `maximize()` toggle, so the
+   * decision "maximised → restore" lives in this electron-free file and has a
+   * test. `ipc.ts` only supplies the two Electron calls.
+   */
+  readonly isMaximized: () => boolean;
+  readonly setMaximized: (maximized: boolean) => void;
   readonly close: () => void;
   /**
    * Shows or hides the `OverlayHUD` window, or `null` until P3-13 builds it —
@@ -92,6 +99,8 @@ export interface BridgeDependencies {
 export interface BridgeHandlers {
   readonly coreRequest: (input: unknown) => Promise<BridgeResult<CoreResponse>>;
   readonly windowMinimize: () => void;
+  /** Maximises the window, or restores it if it already is (P0-15). */
+  readonly windowMaximize: () => void;
   readonly windowClose: () => void;
   readonly windowSetOverlay: (input: unknown) => Promise<BridgeResult<null>>;
   readonly hotkeysGet: () => Promise<BridgeResult<HotkeyMap>>;
@@ -214,6 +223,15 @@ export function createBridgeHandlers(deps: BridgeDependencies): BridgeHandlers {
 
     windowMinimize: (): void => {
       deps.window()?.minimize();
+    },
+
+    windowMaximize: (): void => {
+      const window = deps.window();
+      if (window === null) return;
+      // The button is one button: whichever state the window is in, this leaves
+      // it in the other one. The renderer never says which, so it cannot get the
+      // two out of step with the window MAIN actually owns.
+      window.setMaximized(!window.isMaximized());
     },
 
     windowClose: (): void => {

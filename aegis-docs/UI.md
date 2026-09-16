@@ -114,7 +114,7 @@ The HUD exists because the agent is driving the user's actual desktop — the ma
 - **Autonomy selector** — Observe / Guided / Standard / Trusted, with a one-line description under each. Changing to a *more* permissive level while a task runs requires re-confirmation.
 - **Status dot**: grey idle · blue running · amber waiting-for-you · red stopped/error · purple blocked-by-policy.
 - **Engine note** (P0-09), beside the name and only while the event stream is not live: *Starting the engine…* before the first connection, *Reconnecting…* after one, and *The engine is not running.* with a red dot once the supervisor gives up. It is a `role="status"` region. The full Engine-unavailable screen is P0-17.
-- **Window controls** — minimise and close, outside the drag region, driven through `window.aegis.window` (P0-04). The sketch above shows a maximise button too; the bridge surface in `ARCHITECTURE.md § 9.3` has no `maximize`, and widening it is a `REVIEW.md § 5` item, so that one is tracked as `P0-15` rather than added quietly.
+- **Window controls** — minimise, maximise/restore and close, outside the drag region, driven through `window.aegis.window` (P0-04, maximise added in P0-15 under a `REVIEW.md § 5` review). The middle control is labelled *Maximise* with a `Square` icon, and *Restore* with a `Copy` (two overlapping squares) icon once the window is maximised — label and icon, never the icon alone. Which of the two it is comes from MAIN, pushed over `window.onMaximizedChange`, because double-clicking the drag region and `Win`+`↑` also maximise the window and the titlebar must not show a state it guessed.
 
 ### 4.2 The step card (the most important component in the app)
 

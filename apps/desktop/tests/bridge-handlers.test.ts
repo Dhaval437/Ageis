@@ -20,8 +20,13 @@ function services() {
   const core: CoreGateway = {
     request: vi.fn(() => Promise.resolve({ status: 200, body: { ok: true } })),
   };
+  let maximized = false;
   const window: WindowService = {
     minimize: vi.fn(),
+    isMaximized: vi.fn(() => maximized),
+    setMaximized: vi.fn((next: boolean) => {
+      maximized = next;
+    }),
     close: vi.fn(),
     setOverlay: vi.fn(() => Promise.resolve()),
   };
@@ -187,10 +192,23 @@ describe('bridge handlers', () => {
       expect(svc.window.close).toHaveBeenCalledOnce();
     });
 
+    it('maximises a restored window and restores a maximised one', () => {
+      const { handlers, svc } = build();
+
+      handlers.windowMaximize();
+      expect(svc.window.setMaximized).toHaveBeenLastCalledWith(true);
+
+      // The service now reports itself maximised, so the same button restores.
+      handlers.windowMaximize();
+      expect(svc.window.setMaximized).toHaveBeenLastCalledWith(false);
+      expect(svc.window.setMaximized).toHaveBeenCalledTimes(2);
+    });
+
     it('does not throw when there is no window', () => {
       const handlers = buildEmpty();
       expect(() => {
         handlers.windowMinimize();
+        handlers.windowMaximize();
         handlers.windowClose();
       }).not.toThrow();
     });
