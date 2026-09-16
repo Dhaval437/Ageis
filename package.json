@@ -15,7 +15,7 @@
     "typecheck": "turbo run typecheck && tsc -p scripts",
     "test": "pnpm gen:types:check && turbo run test && pnpm scripts:test && pnpm py:test",
     "clean": "turbo run clean && node scripts/clean.ts",
-    "scripts:test": "node --test scripts/clean.test.ts",
+    "scripts:test": "node --test scripts/clean.test.ts scripts/ci-workflow.test.ts",
     "gen:types": "node scripts/gen-types.ts",
     "gen:types:check": "node scripts/gen-types.ts --check",
     "format": "prettier --write .",
