@@ -124,15 +124,31 @@ aegis/
 
 ### 5.1 Provider abstraction
 
-One interface, many adapters. Everything the agent needs from a model is expressed here:
+One interface, many adapters. Everything the agent needs from a model is expressed here
+(`models/provider.py`; the shapes are in `models/schemas.py`, which is **internal** — it
+has no TypeScript mirror, unlike `server/schemas.py`):
 
 ```python
+@runtime_checkable
 class ModelProvider(Protocol):
-    id: str                       # "openai" | "anthropic" | "google" | "nvidia" | "ollama" | "openrouter" | "custom"
-    async def chat(self, req: ChatRequest) -> AsyncIterator[ChatDelta]: ...
-    def capabilities(self) -> Capabilities   # vision?, tool_calling?, json_mode?, ctx_window, cost_per_mtok
-    async def validate_key(self) -> KeyStatus
+    id: ProviderId                # "openai" | "anthropic" | "google" | "nvidia" | "openrouter" | "ollama" | "custom"
+    def capabilities(self, model: str) -> Capabilities: ...   # vision?, tool_calling?, json_mode?, ctx_window, cost per mtok in/out
+    def chat(self, req: ChatRequest) -> AsyncIterator[ChatDelta]: ...
+    async def validate_key(self) -> KeyStatus: ...
 ```
+
+- `chat` is declared `def`, not `async def`, because every adapter implements it as an
+  **async generator** — which is a plain function returning an `AsyncIterator`. It must
+  release its connection in a `finally`: preemption and a budget breach both abandon a
+  stream mid-flight. It ends in exactly one `DoneDelta` or raises a `ProviderError`.
+- `capabilities` takes a model id because a provider serves many. `openrouter` serves
+  hundreds, and vision is a property of the model, not of the key.
+- A `ChatRequest` has **no field a key could sit in**. Keys are read from the vault at
+  call time (§ 5.3), so a request that is logged or put in an error payload cannot carry
+  one, and `ProviderError` carries a short reason and a status — never a response body.
+- The fallback chain in § 5.3 fires on `ProviderTransientError` and on nothing else.
+  `ProviderAuthError`, `ProviderCapabilityError` and `ProviderProtocolError` do not
+  retry: retrying a rejected key or a refusal is shopping for a yes.
 
 Ship these adapters in v1:
 
