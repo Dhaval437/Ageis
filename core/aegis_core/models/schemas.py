@@ -294,7 +294,8 @@ class Capabilities(BaseModel):
     """What one model can do, so the router can refuse a task before it starts.
 
     Costs are split per direction because output is priced several times input
-    everywhere, and the budget guard (`P1-09`) has to add them separately. `None` means
+    everywhere, and the budget guard (`P1-09`) has to add them separately. Both are in
+    **US dollars per million tokens**, the unit every provider publishes. `None` means
     unknown — a `custom` gateway or a local model — and an unknown price is never
     treated as free.
     """

@@ -14,6 +14,9 @@ license = { text = "UNLICENSED" }
 dependencies = [
   "anyio>=4.0",      # task group behind WS /v1/stream (also starlette's runtime)
   "fastapi>=0.119",
+  # The model adapters' HTTP client: async streaming with built-in, size-capped SSE.
+  # Runtime, not dev, since P1-02 — starlette's TestClient also uses it.
+  "httpx2>=2.12",
   "psutil>=7.0",     # peer-PID check on connect (ARCHITECTURE.md § 3.1 step 5)
   "pydantic>=2.12",
   "uvicorn>=0.38",
@@ -22,7 +25,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "httpx2>=2.0",     # starlette's TestClient transport (it deprecated httpx 0.x)
   "mypy>=1.18",
   "types-psutil>=7.0",
   "pytest>=8.4",
