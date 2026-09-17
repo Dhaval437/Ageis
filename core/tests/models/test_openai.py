@@ -23,14 +23,16 @@ from aegis_core.models.provider import (
     ProviderProtocolError,
     ProviderTransientError,
 )
-from aegis_core.models.providers.openai import (
+from aegis_core.models.providers.common import (
     MAX_TOOL_ARGUMENT_CHARS,
     MAX_TOOL_CALLS,
+    cost_cents,
+)
+from aegis_core.models.providers.openai import (
     OPENAI,
     ChatStream,
     OpenAIProvider,
     ProviderConfig,
-    cost_cents,
     wire_body,
 )
 from aegis_core.models.schemas import (

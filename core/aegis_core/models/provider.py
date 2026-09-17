@@ -94,7 +94,14 @@ class ModelProvider(Protocol):
 
         Takes the model id because a provider serves many — `openrouter` serves
         hundreds, and whether vision is available is a property of the model, not of
-        the account. Raises `ProviderCapabilityError` for a model it does not know.
+        the account.
+
+        An adapter whose models this build can enumerate raises
+        `ProviderCapabilityError` for one it does not know, because an unknown id there
+        is a typo. An adapter that cannot — a gateway, or a vendor that ships models
+        faster than the table is updated — may instead answer a conservative default
+        whose **price is `None`**, and let the provider's own 404 reject the typo. What
+        it may never do is guess a price: an unknown price is unknown, never free.
         """
         ...
 

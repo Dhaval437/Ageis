@@ -30,18 +30,32 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Final, Literal, cast
+from typing import Any, Final, Literal
 
 import httpx2
 
 from aegis_core.models.provider import (
     ProviderAuthError,
     ProviderCapabilityError,
-    ProviderError,
     ProviderProtocolError,
     ProviderTransientError,
+)
+from aegis_core.models.providers.common import (
+    CONNECT_TIMEOUT_S,
+    EVENT_STREAM,
+    HTTP_FORBIDDEN,
+    HTTP_UNAUTHORIZED,
+    MAX_TOOL_ARGUMENT_CHARS,
+    MAX_TOOL_CALLS,
+    KeyLookup,
+    cost_cents,
+    json_object,
+    media_type,
+    new_client,
+    sse_data,
+    status_error,
 )
 from aegis_core.models.schemas import (
     AssistantMessage,
@@ -67,35 +81,12 @@ from aegis_core.models.schemas import (
 
 log = logging.getLogger(__name__)
 
-#: How long to wait for the connection itself, however long the whole call may take.
-CONNECT_TIMEOUT_S: Final = 10.0
-
-#: Nothing here may grow without a bound (`REVIEW.md § 2`). A model that streams tool
-#: arguments forever is a broken model, not a big request.
-MAX_TOOL_CALLS: Final = 32
-MAX_TOOL_ARGUMENT_CHARS: Final = 256 * 1024
-
-#: A cap on one unterminated event, so a gateway cannot stream one endless line.
-MAX_EVENT_BYTES: Final = 1024 * 1024
-
 _SSE_DONE: Final = "[DONE]"
-_EVENT_STREAM: Final = "text/event-stream"
-
-#: Status codes that mean something specific. Anything else is read from its class.
-_HTTP_UNAUTHORIZED: Final = 401
-_HTTP_FORBIDDEN: Final = 403
-_HTTP_NOT_FOUND: Final = 404
-_HTTP_TOO_MANY_REQUESTS: Final = 429
-_HTTP_SERVER_ERROR: Final = 500
 
 
 # ---------------------------------------------------------------------------
 # Configuration — the only thing that differs between the compatible providers
 # ---------------------------------------------------------------------------
-
-#: Reads the key for this provider out of the vault. Called once per request and never
-#: stored, so nothing that outlives a call holds a key (`ARCHITECTURE.md § 5.3`).
-KeyLookup = Callable[[], str | None]
 
 
 @dataclass(frozen=True)
@@ -280,12 +271,7 @@ class ChatStream:
 
     def read(self, data: str) -> list[ChatDelta]:
         """Turn one `data:` payload into the deltas it produced, if any."""
-        try:
-            chunk = json.loads(data)
-        except ValueError as exc:
-            raise ProviderProtocolError(self.provider_id, "the stream was not JSON") from exc
-        if not isinstance(chunk, dict):
-            raise ProviderProtocolError(self.provider_id, "a stream chunk was not an object")
+        chunk = json_object(data, self.provider_id)
 
         self._read_usage(chunk.get("usage"))
 
@@ -380,91 +366,6 @@ class ChatStream:
         return calls
 
 
-def cost_cents(caps: Capabilities, usage: Usage) -> float | None:
-    """What a call cost, in cents. `None` when either price is unknown — never free."""
-    if caps.cost_per_mtok_input is None or caps.cost_per_mtok_output is None:
-        return None
-    dollars = (
-        usage.input_tokens * caps.cost_per_mtok_input
-        + usage.output_tokens * caps.cost_per_mtok_output
-    ) / 1_000_000
-    return dollars * 100
-
-
-def _media_type(response: httpx2.Response) -> str:
-    return response.headers.get("content-type", "").partition(";")[0].strip().lower()
-
-
-async def _sse_data(
-    response: httpx2.Response, provider_id: ProviderId
-) -> AsyncGenerator[str, None]:
-    """Yield the `data:` payload of each server-sent event.
-
-    httpx2 ships an `EventSource`, and this does not use it: it reads the response in a
-    generator of its own that a caller cannot reach, so abandoning a stream mid-flight
-    — which is exactly what preemption does — leaves that generator to be finalised
-    after the socket has gone, and the event loop logs an error every time. Reading the
-    response here means every generator in the chain is closed, in order, on the stop
-    path. The part of the format a provider actually uses is this small.
-    """
-    # `aiter_text` is an async generator function, so what it returns really does have
-    # `aclose()`; only its annotation is the wider `AsyncIterator`.
-    reader = cast("AsyncGenerator[str, None]", response.aiter_text())
-    buffer = ""
-    data: list[str] = []
-    try:
-        async for chunk in reader:
-            buffer += chunk
-            if len(buffer) > MAX_EVENT_BYTES:
-                raise ProviderProtocolError(provider_id, "an event was too large to read")
-            while "\n" in buffer:
-                line, _, buffer = buffer.partition("\n")
-                event = _feed(data, line)
-                if event:
-                    yield event
-        # The stream ended without its last blank line. Read what is left rather than
-        # dropping it: usage is the last thing a provider sends, and a genuinely
-        # truncated tail then fails loudly on the JSON instead of costing nothing.
-        if buffer:
-            _feed(data, buffer)
-        if data:
-            yield "\n".join(data)
-    finally:
-        await reader.aclose()
-
-
-def _feed(data: list[str], line: str) -> str | None:
-    """Consume one SSE line, returning an event's payload if that line ended one."""
-    line = line.rstrip("\r")
-    if not line:
-        if not data:
-            return None
-        event = "\n".join(data)
-        data.clear()
-        return event
-    if line.startswith(":"):  # a keep-alive comment
-        return None
-    name, _, value = line.partition(":")
-    if name == "data":
-        data.append(value[1:] if value.startswith(" ") else value)
-    return None
-
-
-def _status_error(provider_id: ProviderId, status: int) -> ProviderError:
-    """Map a status to an error type. The body is never read, let alone quoted."""
-    if status in (_HTTP_UNAUTHORIZED, _HTTP_FORBIDDEN):
-        return ProviderAuthError(provider_id, "that API key was rejected", status=status)
-    if status == _HTTP_NOT_FOUND:
-        return ProviderCapabilityError(
-            provider_id, "that model is not available to this key", status=status
-        )
-    if status == _HTTP_TOO_MANY_REQUESTS:
-        return ProviderTransientError(provider_id, "too many requests", status=status)
-    if status >= _HTTP_SERVER_ERROR:
-        return ProviderTransientError(provider_id, "the provider had a server error", status=status)
-    return ProviderProtocolError(provider_id, "the provider refused the request", status=status)
-
-
 # ---------------------------------------------------------------------------
 # The adapter
 # ---------------------------------------------------------------------------
@@ -496,15 +397,7 @@ class OpenAIProvider:
 
     def _http(self) -> httpx2.AsyncClient:
         if self._client is None:
-            self._client = httpx2.AsyncClient(
-                base_url=self._config.base_url,
-                transport=self._transport,
-                # A redirect would send the Authorization header somewhere the user
-                # never chose, which is the whole point of the egress rule in
-                # `REMEMBER.md § 3`.
-                follow_redirects=False,
-                timeout=httpx2.Timeout(CONNECT_TIMEOUT_S),
-            )
+            self._client = new_client(self._config.base_url, self._transport)
         return self._client
 
     async def aclose(self) -> None:
@@ -543,11 +436,11 @@ class OpenAIProvider:
                 timeout=httpx2.Timeout(req.timeout_s, connect=CONNECT_TIMEOUT_S),
             ) as response:
                 if response.status_code != httpx2.codes.OK:
-                    raise _status_error(self.id, response.status_code)
-                if _media_type(response) != _EVENT_STREAM:
+                    raise status_error(self.id, response.status_code)
+                if media_type(response) != EVENT_STREAM:
                     raise ProviderProtocolError(self.id, "the answer was not an event stream")
                 log.debug("model.stream_open", extra={"provider": self.id, "model": req.model})
-                events = _sse_data(response, self.id)
+                events = sse_data(response, self.id)
                 try:
                     async for data in events:
                         if data == _SSE_DONE:
@@ -593,7 +486,7 @@ class OpenAIProvider:
             return KeyStatus(valid=False, detail="Could not reach the provider.")
         if response.status_code == httpx2.codes.OK:
             return KeyStatus(valid=True, detail="The key works.")
-        if response.status_code in (_HTTP_UNAUTHORIZED, _HTTP_FORBIDDEN):
+        if response.status_code in (HTTP_UNAUTHORIZED, HTTP_FORBIDDEN):
             return KeyStatus(valid=False, detail="That key was rejected.")
         return KeyStatus(
             valid=False,
