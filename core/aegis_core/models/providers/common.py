@@ -41,6 +41,7 @@ MAX_TOOL_ARGUMENT_CHARS: Final = 256 * 1024
 EVENT_STREAM: Final = "text/event-stream"
 
 #: Status codes that mean something specific. Anything else is read from its class.
+HTTP_BAD_REQUEST: Final = 400
 HTTP_UNAUTHORIZED: Final = 401
 HTTP_FORBIDDEN: Final = 403
 HTTP_NOT_FOUND: Final = 404
