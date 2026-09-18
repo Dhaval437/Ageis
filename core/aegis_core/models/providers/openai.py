@@ -97,6 +97,11 @@ class ProviderConfig:
     `models`. It is `None` here — an unknown OpenAI model is a typo — but a gateway
     that serves hundreds of models (`openrouter`, `custom`, `P1-05`) has to answer
     something, and an unknown *price* is `None`, never free.
+
+    `key_check_path` is what `validate_key()` asks for. `/models` is the one endpoint
+    every compatible provider has, but not every one of them authenticates it, and a
+    provider that serves it to anyone would make the Test button call any string a
+    working key.
     """
 
     id: ProviderId
@@ -104,6 +109,7 @@ class ProviderConfig:
     models: Mapping[str, Capabilities]
     unknown_model: Capabilities | None = None
     max_tokens_field: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
+    key_check_path: str = "/models"
 
 
 def _caps(
@@ -478,7 +484,7 @@ class OpenAIProvider:
             return KeyStatus(valid=False, detail="No key is saved for this provider yet.")
         try:
             response = await self._http().get(
-                "/models",
+                self._config.key_check_path,
                 headers=self._headers(),
                 timeout=httpx2.Timeout(CONNECT_TIMEOUT_S),
             )

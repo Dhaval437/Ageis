@@ -157,12 +157,14 @@ Ship these adapters in v1:
 | `openai` | OpenAI Chat Completions | Also serves **any OpenAI-compatible** base URL. |
 | `anthropic` | Messages API | Native tool use + vision. |
 | `google` | Gemini API | Vision, long context. |
-| `nvidia` | `integrate.api.nvidia.com/v1` | **OpenAI-compatible** → subclass of `openai` with a different base URL and model list. |
+| `nvidia` | `integrate.api.nvidia.com/v1` | **OpenAI-compatible** → a `ProviderConfig` over `openai` with a different base URL, **not** a subclass. |
 | `openrouter` | OpenAI-compatible | One key, hundreds of models — great default for users who don't want many accounts. |
 | `ollama` | `localhost:11434` | **Fully local, zero cost, zero data egress.** The privacy story. |
 | `custom` | user-entered base URL + key | Any other OpenAI-compatible gateway (vLLM, LM Studio, Groq, Together). |
 
-Because five of the seven are OpenAI-compatible, the real work is two adapters plus a registry of base URLs. **Do not write seven bespoke clients.**
+Because five of the seven are OpenAI-compatible, the real work is two adapters plus a registry of base URLs. **Do not write seven bespoke clients.** That registry is
+`models/providers/compatible.py` (`P1-05`): `NVIDIA`, `OPENROUTER`, and `custom_config(base_url)` for a user-entered gateway. A `custom` URL is checked before it is used —
+`https` anywhere, `http` only to loopback, no credentials in the URL — because it decides where the user's key is sent.
 
 ### 5.2 Model roles (this is the important bit)
 
