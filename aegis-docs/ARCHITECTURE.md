@@ -188,6 +188,13 @@ Benefits: cost control, and a user can run `UTILITY` on local Ollama while `PLAN
 - **Capability gate.** If a task step needs vision and the chosen `GROUNDER` has none, refuse loudly at task start, not mid-run.
 - **Key vault access.** Keys are fetched from `storage/vault.py` (DPAPI) at call time and never held in a long-lived variable, never logged, never included in any error payload, never sent to the renderer. Settings UI shows `sk-…abcd` only.
 
+`storage/vault.py` (`P1-07`) is the only place in the core that reads or writes a key. `KeyVault` keeps one key per provider under the single Credential Manager target `Aegis`, and:
+
+- **constructs `keyring.backends.Windows.WinVaultKeyring` itself** — it never calls `keyring.get_password()` or `keyring.get_keyring()`, whose backend is selected by a `keyringrc.cfg` and by any backend entry point installed on `sys.path`. Invariant 9 is a guarantee about DPAPI, not about the `keyring` package;
+- **hands out a `KeyLookup`, not a key.** `vault.lookup(provider_id)` is what an adapter is constructed with, so the key is read from the OS on each request and nothing longer-lived holds one;
+- **refuses a key containing any control character**, because a key is written straight into an `Authorization` / `x-api-key` / `x-goog-api-key` header and a CR or LF in one is header injection. It also strips surrounding whitespace and caps length at 1024 characters;
+- **displays only `mask_key()`** — first three and last four characters, and nothing at all below sixteen.
+
 ---
 
 ## 6. The agent
