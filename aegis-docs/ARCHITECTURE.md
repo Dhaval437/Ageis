@@ -166,6 +166,8 @@ Because five of the seven are OpenAI-compatible, the real work is two adapters p
 `models/providers/compatible.py` (`P1-05`): `NVIDIA`, `OPENROUTER`, and `custom_config(base_url)` for a user-entered gateway. A `custom` URL is checked before it is used —
 `https` anywhere, `http` only to loopback, no credentials in the URL — because it decides where the user's key is sent.
 
+`ollama` (`P1-06`) uses that same client through `models/providers/ollama.py`, but is not one more entry in the registry, because two things about a local server are not a base URL. It takes **no key** (`ProviderConfig.requires_key` is `False`, and `validate_key()` answers *is it running and does it have a model?*), and its model table is whatever the user pulled — so `refresh()` asks the server itself (`/api/tags`, `/api/show`) and `detect()` returns a provider only when one is really listening. `OLLAMA_HOST` is honoured and checked exactly as a `custom` URL is. A local model is priced at **0.0**, which is a fact rather than a guess; only an *unknown* price is `None`.
+
 ### 5.2 Model roles (this is the important bit)
 
 The agent does not use one model. It uses three *roles*, and the user maps each role to any model they like in Settings:

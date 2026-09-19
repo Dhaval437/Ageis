@@ -225,8 +225,10 @@ class ChatRequest(BaseModel):
 class Usage(BaseModel):
     """What the call cost.
 
-    `cost_cents` is `None` when the provider prices nothing we can read — a local
-    Ollama model, or a `custom` gateway. It is a float, not integer cents, because one
+    `cost_cents` is `None` when the provider prices nothing we can read — a `custom`
+    gateway, or a hosted model this build has no price for. A **local** model is `0.0`
+    rather than unknown (`P1-06`): the inference ran on the user's own hardware, so free
+    is a fact there and not a guess. It is a float, not integer cents, because one
     cheap call costs a fraction of a cent and integers round a whole task to zero
     (same reason as `tasks.cost_cents` in `ARCHITECTURE.md § 7`).
     """
@@ -296,8 +298,9 @@ class Capabilities(BaseModel):
     Costs are split per direction because output is priced several times input
     everywhere, and the budget guard (`P1-09`) has to add them separately. Both are in
     **US dollars per million tokens**, the unit every provider publishes. `None` means
-    unknown — a `custom` gateway or a local model — and an unknown price is never
-    treated as free.
+    unknown — a `custom` gateway, or a vendor that publishes no per-model rate — and an
+    unknown price is never treated as free. A local model is `0.0`, which is a different
+    statement: it is priced, and the price is nothing.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

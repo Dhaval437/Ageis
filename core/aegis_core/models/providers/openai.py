@@ -102,6 +102,12 @@ class ProviderConfig:
     every compatible provider has, but not every one of them authenticates it, and a
     provider that serves it to anyone would make the Test button call any string a
     working key.
+
+    `requires_key` is `False` for an endpoint that takes no credential at all — a server
+    on this machine has nobody to authenticate. Without it, a keyless endpoint would be
+    unusable: `_headers()` refuses to send a request it has no key for, which is the
+    right answer everywhere a key is what pays for the call. A key that *is* saved is
+    still sent, because a proxy in front of such a server may want one.
     """
 
     id: ProviderId
@@ -110,6 +116,7 @@ class ProviderConfig:
     unknown_model: Capabilities | None = None
     max_tokens_field: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
     key_check_path: str = "/models"
+    requires_key: bool = True
 
 
 def _caps(
@@ -503,14 +510,16 @@ class OpenAIProvider:
 
     def _headers(self) -> dict[str, str]:
         """Read the key, build one header, keep nothing."""
-        key = self._key_lookup()
-        if not key:
-            raise ProviderAuthError(self.id, "no API key is saved for this provider")
-        return {
-            "Authorization": f"Bearer {key}",
+        headers = {
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         }
+        key = self._key_lookup()
+        if not key:
+            if self._config.requires_key:
+                raise ProviderAuthError(self.id, "no API key is saved for this provider")
+            return headers
+        return {"Authorization": f"Bearer {key}", **headers}
 
     def _gate(self, req: ChatRequest, caps: Capabilities) -> None:
         """Refuse what the model cannot do, here rather than as a provider 400.

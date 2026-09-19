@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(./.venv/Scripts/python.exe -m ruff format aegis_core/models/providers/anthropic.py aegis_core/models/providers/common.py aegis_core/models/providers/openai.py)",
+      "Bash(./.venv/Scripts/python.exe -m ruff check aegis_core/models/)",
+      "Bash(./.venv/Scripts/python.exe -m mypy --strict aegis_core)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/models/test_anthropic.py -q)",
+      "Bash(./.venv/Scripts/python.exe -m mypy --strict aegis_core tests)",
+      "PowerShell(core\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/models/test_ollama.py -q 2>&1)",
+      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=10608 or ProcessId=18696\")"
+    ]
+  }
+}
