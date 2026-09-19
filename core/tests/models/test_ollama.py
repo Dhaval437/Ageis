@@ -9,6 +9,7 @@ the one place a real Ollama is used — skipped unless one is running.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
@@ -19,11 +20,13 @@ from aegis_core.models.provider import (
     ProviderCapabilityError,
     ProviderTransientError,
 )
+from aegis_core.models.providers import ollama as ollama_module
 from aegis_core.models.providers.common import cost_cents
 from aegis_core.models.providers.ollama import (
     DEFAULT_BASE_URL,
     DEFAULT_CTX_WINDOW,
     DEFAULT_PORT,
+    MAX_CONCURRENT_DESCRIBES,
     MAX_MODELS,
     OLLAMA_UNKNOWN,
     OllamaProvider,
@@ -79,6 +82,11 @@ class Ollama:
         self.show: dict[str, dict[str, Any]] = {}
         self.status = 200
         self.offline = False
+        #: How long `/api/show` takes to answer, for the discovery-budget tests.
+        self.show_delay = 0.0
+        #: The most describes the server ever had in flight at once.
+        self.peak_in_flight = 0
+        self._in_flight = 0
         self._chat = chat
 
     def transport(self) -> httpx2.MockTransport:
@@ -91,6 +99,13 @@ class Ollama:
             if request.url.path == "/api/tags":
                 return httpx2.Response(self.status, json=self.tags)
             if request.url.path == "/api/show":
+                self._in_flight += 1
+                self.peak_in_flight = max(self.peak_in_flight, self._in_flight)
+                try:
+                    if self.show_delay:
+                        await asyncio.sleep(self.show_delay)
+                finally:
+                    self._in_flight -= 1
                 model = request.content.decode()
                 for name, payload in self.show.items():
                     if f'"{name}"' in model:
@@ -292,6 +307,48 @@ async def test_tools_reach_a_model_that_reports_them() -> None:
 
 
 @pytest.mark.asyncio
+async def test_discovery_asks_about_models_concurrently_but_not_without_a_bound() -> None:
+    """Serial asking is what turns a stalled local server into a startup that hangs."""
+    server = Ollama()
+    names = tuple(f"model-{index}:latest" for index in range(MAX_CONCURRENT_DESCRIBES * 3))
+    server.tags = tags(*names)
+    server.show = {name: show("completion", "tools") for name in names}
+    server.show_delay = 0.02
+    provider = provider_over(server)
+
+    found = await provider.refresh()
+    await provider.aclose()
+
+    assert len(found) == len(names)
+    assert server.peak_in_flight > 1, "describes ran one after another"
+    assert server.peak_in_flight <= MAX_CONCURRENT_DESCRIBES
+
+
+@pytest.mark.asyncio
+async def test_a_server_that_stalls_costs_one_budget_not_one_per_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`DETECT_TIMEOUT_S` bounds one call; the whole set needs its own bound."""
+    monkeypatch.setattr(ollama_module, "DISCOVERY_BUDGET_S", 0.1)
+    server = Ollama()
+    names = tuple(f"model-{index}:latest" for index in range(MAX_MODELS))
+    server.tags = tags(*names)
+    server.show = {name: show("completion", "vision") for name in names}
+    server.show_delay = 5.0
+    provider = provider_over(server)
+
+    started = asyncio.get_running_loop().time()
+    found = await provider.refresh()
+    elapsed = asyncio.get_running_loop().time() - started
+    await provider.aclose()
+
+    assert elapsed < 5.0, "the budget bounds the set, not each call"
+    # Every model is still listed, with the conservative answer rather than none at all.
+    assert found == names
+    assert provider.capabilities(names[0]) == OLLAMA_UNKNOWN
+
+
+@pytest.mark.asyncio
 async def test_the_model_list_is_bounded() -> None:
     """`REVIEW.md § 2`: nothing in-memory grows without a bound."""
     server = Ollama()
@@ -373,6 +430,15 @@ async def test_detect_answers_none_on_a_machine_without_ollama() -> None:
     server.offline = True
 
     assert await detect(transport=server.transport()) is None
+
+
+@pytest.mark.asyncio
+async def test_detect_answers_none_for_an_address_it_cannot_use() -> None:
+    """`P1-10` passes a URL the user typed, which is not a programming error."""
+    server = Ollama()
+
+    assert await detect(base_url="http://192.168.1.10:11434", transport=server.transport()) is None
+    assert server.requests == [], "a refused address must never be contacted"
 
 
 @pytest.mark.asyncio

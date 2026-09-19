@@ -26,6 +26,7 @@ the one thing the local path must never do.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Mapping
@@ -58,6 +59,19 @@ DETECT_TIMEOUT_S: Final = 5.0
 #: `REVIEW.md § 2`: no unbounded list. A machine with more models than this has them
 #: listed, and the rest fall back to the conservative default rather than being probed.
 MAX_MODELS: Final = 64
+
+#: What the whole describe phase gets, however many models are installed.
+#:
+#: `DETECT_TIMEOUT_S` bounds one call, which is not the same as bounding the set: asking
+#: about `MAX_MODELS` models one after another would let a server that accepts and then
+#: stalls hold startup for minutes, which is exactly the visible pause discovery is not
+#: allowed to cost. A model not described inside this budget keeps `OLLAMA_UNKNOWN` — the
+#: same answer a server too old to describe it gives.
+DISCOVERY_BUDGET_S: Final = 10.0
+
+#: How many models to ask about at once. Enough that loopback latency overlaps, few
+#: enough not to bury a server that is also loading a model for somebody.
+MAX_CONCURRENT_DESCRIBES: Final = 8
 
 #: What Ollama accepts before it silently truncates the prompt.
 #:
@@ -210,11 +224,37 @@ class OllamaProvider:
         nothing new.
         """
         names = await self._list_models()
-        found = {name: await self._describe(name) for name in names}
+        # Conservative first, so a model we never get to describe is still listed with an
+        # answer rather than dropped off the machine.
+        found = dict.fromkeys(names, OLLAMA_UNKNOWN)
+        if found:
+            await self._describe_all(found)
         self._models.clear()
         self._models.update(found)
         log.debug("model.ollama_refreshed", extra={"models": len(found)})
         return tuple(found)
+
+    async def _describe_all(self, found: dict[str, Capabilities]) -> None:
+        """Fill in what each model can do, under one budget for the whole set.
+
+        Concurrent because these are independent reads of a server on this machine, and
+        serial asking is what turns a stalled server into a startup that hangs. Bounded
+        twice — by `MAX_CONCURRENT_DESCRIBES` at once and `DISCOVERY_BUDGET_S` overall —
+        so the cost of discovery does not scale with how many models the user pulled.
+        """
+        limit = asyncio.Semaphore(MAX_CONCURRENT_DESCRIBES)
+
+        async def describe_one(model: str) -> None:
+            async with limit:
+                found[model] = await self._describe(model)
+
+        try:
+            async with asyncio.timeout(DISCOVERY_BUDGET_S):
+                await asyncio.gather(*(describe_one(model) for model in found))
+        except TimeoutError:
+            # Whatever finished is kept; the rest keep the conservative default. Losing
+            # a capability is a smaller failure than losing the provider.
+            log.warning("model.ollama_describe_timed_out", extra={"models": len(found)})
 
     @property
     def models(self) -> Mapping[str, Capabilities]:
@@ -295,18 +335,20 @@ async def detect(
     """Look for a running Ollama and return a provider that knows its models.
 
     `None` means there is nothing to connect to, which is the ordinary case on a machine
-    that has never installed it — so this never raises and never blocks for long. A
-    misconfigured `OLLAMA_HOST` is the same answer with a logged reason: startup must not
-    fail because an environment variable is wrong.
+    that has never installed it — so this never raises and never blocks for long. An
+    address that cannot be used is the same answer with a logged reason, whether it came
+    from `OLLAMA_HOST` or was passed in: startup must not fail because an environment
+    variable is wrong, and `P1-10` hands this a URL the user typed, which is not a
+    programming error either.
     """
     try:
         resolved = base_url if base_url is not None else default_base_url()
+        provider = OllamaProvider(base_url=resolved, transport=transport)
     except ValueError as exc:
         # The message never quotes the address back (`P1-05`), so it is safe to log.
         log.warning("model.ollama_host_unusable", extra={"reason": str(exc)})
         return None
 
-    provider = OllamaProvider(base_url=resolved, transport=transport)
     try:
         await provider.refresh()
     except ProviderTransientError:
