@@ -188,6 +188,14 @@ Benefits: cost control, and a user can run `UTILITY` on local Ollama while `PLAN
 - **Capability gate.** If a task step needs vision and the chosen `GROUNDER` has none, refuse loudly at task start, not mid-run.
 - **Key vault access.** Keys are fetched from `storage/vault.py` (DPAPI) at call time and never held in a long-lived variable, never logged, never included in any error payload, never sent to the renderer. Settings UI shows `sk-…abcd` only.
 
+`P1-08` builds all of that except the budget guard, which is `P1-09`. What a caller sees:
+
+- **`RoleMap`** — `{role: RoleRoute}` for all three roles, each a `primary` plus up to three `fallbacks`, every link a `ModelChoice` (`provider_id`, `model`, and the § 5.2 *params* as `temperature` / `max_output_tokens`). This is the shape the Models screen (`P1-10`) writes.
+- **`RoleRequest`** — everything a `ChatRequest` has **except `model`**, because the role map is what decides which model answers; `bind(choice)` makes the `ChatRequest` for one attempt and merges the saved params under whatever the request itself names.
+- **`ModelRouter.ensure_capable(role, Requirement)`** — the capability gate, called at task start. It checks the **primary only**; an incapable fallback is dropped from the chain with a log line, because a blind spare must not brick a working primary and must not silently answer a vision question either.
+- **`ModelRouter.chat(role, req)`** — the stream. It walks the chain on `ProviderTransientError` alone, and **only until the first delta reaches the consumer**: after that, restarting elsewhere would repeat text already in the timeline and re-issue a tool call the Guardian has already seen.
+- **`ProviderPool`** — one adapter per `ProviderId`, built on first use and `aclose()`d together, since each owns a connection pool. It is given a `KeySource` (the vault) and hands each adapter a `KeyLookup`, so it holds no key; a `custom` gateway's saved address is re-checked with `normalise_base_url` every time the adapter is built. A provider settings cannot describe raises `ProviderUnavailableError`, which is a `RouterError` and not a `ProviderError` — a missing gateway address is for the user to fix, not something to retry around.
+
 `storage/vault.py` (`P1-07`) is the only place in the core that reads or writes a key. `KeyVault` keeps one key per provider under the single Credential Manager target `Aegis`, and:
 
 - **constructs `keyring.backends.Windows.WinVaultKeyring` itself** — it never calls `keyring.get_password()` or `keyring.get_keyring()`, whose backend is selected by a `keyringrc.cfg` and by any backend entry point installed on `sys.path`. Invariant 9 is a guarantee about DPAPI, not about the `keyring` package;
