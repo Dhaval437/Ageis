@@ -31,10 +31,18 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "created_at", "undone_at",
     ],
     "settings": ["key", "value_json"],
+    "usage": [
+        "id", "task_id", "ts", "day", "role", "provider_id", "model",
+        "input_tokens", "output_tokens", "cost_cents",
+    ],
 }  # fmt: skip
 
 NOW = "2026-09-14T12:00:00.000Z"
 HASH = "a" * 64
+
+#: One past the last shipped migration. Spelled this way so adding a migration does not
+#: silently turn the "only pending migrations run" tests into tests of nothing.
+NEXT_VERSION = MIGRATIONS[-1].version + 1
 
 
 @pytest.fixture
@@ -178,8 +186,10 @@ def test_only_pending_migrations_run(db_path: Path) -> None:
     conn = connect(db_path)
     try:
         migrate(conn)
-        extra = Migration(2, "add_notes", "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;")
-        assert migrate(conn, (*MIGRATIONS, extra)) == 2
+        extra = Migration(
+            NEXT_VERSION, "add_notes", "CREATE TABLE notes (id INTEGER PRIMARY KEY) STRICT;"
+        )
+        assert migrate(conn, (*MIGRATIONS, extra)) == NEXT_VERSION
         assert conn.execute("SELECT count(*) FROM notes").fetchone()[0] == 0
     finally:
         conn.close()
@@ -188,16 +198,16 @@ def test_only_pending_migrations_run(db_path: Path) -> None:
 def test_a_failing_migration_leaves_no_trace(db_path: Path) -> None:
     """The DDL and the version bump commit together or not at all."""
     broken = Migration(
-        2,
+        NEXT_VERSION,
         "half_done",
         "CREATE TABLE half (id INTEGER PRIMARY KEY) STRICT;\nCREATE TABLE tasks (x INTEGER);",
     )
     conn = connect(db_path)
     try:
         migrate(conn)
-        with pytest.raises(StorageError, match="migration 2"):
+        with pytest.raises(StorageError, match=f"migration {NEXT_VERSION}"):
             migrate(conn, (*MIGRATIONS, broken))
-        assert schema_version(conn) == 1
+        assert schema_version(conn) == MIGRATIONS[-1].version
         assert not conn.in_transaction
         exists = conn.execute("SELECT count(*) FROM sqlite_schema WHERE name = 'half'")
         assert exists.fetchone()[0] == 0

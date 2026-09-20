@@ -14,14 +14,16 @@ does it. This module owns the three things that decision needs:
   *at task start*, loudly, naming the model and what is missing — not mid-run as a
   provider 400 with a task half done.
 
+- **The budget guard.** `models/budget.py` (`P1-09`) decides *whether to ask at all*,
+  and this module is where it is asked: a `chat()` on a router that has one is checked
+  before anything reaches the wire, and every `UsageDelta` that comes back is recorded
+  against the task. A router built without a guard behaves exactly as it did before.
+
 It also owns the provider instances, because they own connection pools: `ProviderPool`
 builds one adapter per provider id and `aclose()` releases them all. What it never owns
 is a key. The pool is given a `KeySource` — the DPAPI vault (`P1-07`) — and hands each
 adapter a `KeyLookup` callable, so a key is read from the OS per request and nothing
 here, or in an adapter, outlives a call holding one (`ARCHITECTURE.md § 5.3`).
-
-The budget guard is `P1-09` and is deliberately **not** here yet: this module decides
-*who answers*, and the guard decides *whether to ask at all*.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from typing import Final, Literal, Protocol, runtime_checkable
 import httpx2
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from aegis_core.models.budget import BudgetGuard
 from aegis_core.models.provider import (
     ModelProvider,
     ProviderCapabilityError,
@@ -55,6 +58,7 @@ from aegis_core.models.schemas import (
     ToolChoice,
     ToolDef,
     ToolResultMessage,
+    UsageDelta,
     UserMessage,
 )
 
@@ -364,11 +368,22 @@ class ModelRouter:
 
     Holds the role map and the pool. Nothing above it names a provider, and nothing in it
     holds a key.
+
+    `guard` is optional because a router is useful without one — `P1-10`'s *Test* button
+    spends money outside any task, and the tests for routing itself have no ledger. With
+    one, every call is checked before it is made and accounted for after.
     """
 
-    def __init__(self, roles: RoleMap, pool: ProviderPool) -> None:
+    def __init__(
+        self,
+        roles: RoleMap,
+        pool: ProviderPool,
+        *,
+        guard: BudgetGuard | None = None,
+    ) -> None:
         self._roles = roles
         self._pool = pool
+        self._guard = guard
 
     @property
     def roles(self) -> RoleMap:
@@ -446,7 +461,13 @@ class ModelRouter:
 
     # -- the call ----------------------------------------------------------
 
-    async def chat(self, role: ModelRole, req: RoleRequest) -> AsyncIterator[ChatDelta]:
+    async def chat(
+        self,
+        role: ModelRole,
+        req: RoleRequest,
+        *,
+        task_id: int | None = None,
+    ) -> AsyncIterator[ChatDelta]:
         """Stream one completion from whichever model serves `role`.
 
         Walks the chain on `ProviderTransientError` — a 429, a 5xx, a timeout — and on
@@ -458,7 +479,16 @@ class ModelRouter:
         repeat it, and a tool call already emitted would be asked for twice. After that
         point a transient failure is the caller's problem, which is what `P4-08`'s
         cancellation and retry are for.
+
+        With a budget guard, this raises `BudgetExceededError` **before any request is
+        made** if a ceiling has already been reached, and records what each attempt cost
+        as its `UsageDelta` arrives. A breach discovered while recording does not abort
+        the stream in flight — that money is spent, and the refusal belongs at the start
+        of the next call (`models/budget.py`).
         """
+        if self._guard is not None:
+            self._guard.check(task_id)
+
         chain = self.chain(role, Requirement.of(req))
         last: ProviderError | None = None
 
@@ -469,6 +499,14 @@ class ModelRouter:
             try:
                 async for delta in stream:
                     delivered = True
+                    if isinstance(delta, UsageDelta) and self._guard is not None:
+                        self._guard.record(
+                            delta.usage,
+                            role=role,
+                            provider_id=choice.provider_id,
+                            model=choice.model,
+                            task_id=task_id,
+                        )
                     yield delta
                 return
             except ProviderError as error:

@@ -54,17 +54,26 @@ def default_db_path() -> Path:
     return default_data_dir() / DB_FILE_NAME
 
 
-def connect(path: Path) -> sqlite3.Connection:
+def connect(path: Path, *, cross_thread: bool = False) -> sqlite3.Connection:
     """Open `path` (creating it and its folder) with the pragmas above applied.
 
     The connection is in autocommit mode (`isolation_level=None`): callers open
     transactions explicitly, so none is ever left open by accident.
+
+    `cross_thread` lifts sqlite3's own same-thread check, for a caller that holds
+    one connection and serialises every statement on it under a lock of its own
+    (`storage/usage.py`). Without such a lock it is unsafe — the default stands.
     """
     if sqlite3.sqlite_version_info < MIN_SQLITE_VERSION:
         raise StorageError(f"SQLite {sqlite3.sqlite_version} is too old; 3.38 or newer is required")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path, timeout=BUSY_TIMEOUT_S, isolation_level=None)
+        conn = sqlite3.connect(
+            path,
+            timeout=BUSY_TIMEOUT_S,
+            isolation_level=None,
+            check_same_thread=not cross_thread,
+        )
     except (OSError, sqlite3.Error) as error:
         raise StorageError(f"cannot open the database: {error}") from error
     try:

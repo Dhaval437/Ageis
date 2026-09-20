@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-from aegis_core.storage.migrations import m0001_initial
+from aegis_core.storage.migrations import m0001_initial, m0002_usage
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,4 +26,7 @@ class Migration:
     sql: str
 
 
-MIGRATIONS: Final[tuple[Migration, ...]] = (Migration(1, "initial", m0001_initial.SQL),)
+MIGRATIONS: Final[tuple[Migration, ...]] = (
+    Migration(1, "initial", m0001_initial.SQL),
+    Migration(2, "usage", m0002_usage.SQL),
+)

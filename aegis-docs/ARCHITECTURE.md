@@ -188,13 +188,21 @@ Benefits: cost control, and a user can run `UTILITY` on local Ollama while `PLAN
 - **Capability gate.** If a task step needs vision and the chosen `GROUNDER` has none, refuse loudly at task start, not mid-run.
 - **Key vault access.** Keys are fetched from `storage/vault.py` (DPAPI) at call time and never held in a long-lived variable, never logged, never included in any error payload, never sent to the renderer. Settings UI shows `sk-…abcd` only.
 
-`P1-08` builds all of that except the budget guard, which is `P1-09`. What a caller sees:
+`P1-08` built the routing, and `P1-09` the budget guard. What a caller sees:
 
 - **`RoleMap`** — `{role: RoleRoute}` for all three roles, each a `primary` plus up to three `fallbacks`, every link a `ModelChoice` (`provider_id`, `model`, and the § 5.2 *params* as `temperature` / `max_output_tokens`). This is the shape the Models screen (`P1-10`) writes.
 - **`RoleRequest`** — everything a `ChatRequest` has **except `model`**, because the role map is what decides which model answers; `bind(choice)` makes the `ChatRequest` for one attempt and merges the saved params under whatever the request itself names.
 - **`ModelRouter.ensure_capable(role, Requirement)`** — the capability gate, called at task start. It checks the **primary only**; an incapable fallback is dropped from the chain with a log line, because a blind spare must not brick a working primary and must not silently answer a vision question either.
 - **`ModelRouter.chat(role, req)`** — the stream. It walks the chain on `ProviderTransientError` alone, and **only until the first delta reaches the consumer**: after that, restarting elsewhere would repeat text already in the timeline and re-issue a tool call the Guardian has already seen.
 - **`ProviderPool`** — one adapter per `ProviderId`, built on first use and `aclose()`d together, since each owns a connection pool. It is given a `KeySource` (the vault) and hands each adapter a `KeyLookup`, so it holds no key; a `custom` gateway's saved address is re-checked with `normalise_base_url` every time the adapter is built. A provider settings cannot describe raises `ProviderUnavailableError`, which is a `RouterError` and not a `ProviderError` — a missing gateway address is for the user to fix, not something to retry around.
+
+`models/budget.py` (`P1-09`) is the guard, and `storage/usage.py` is what it counts. Three rules shape it:
+
+- **A breach is refused at the door, never mid-flight.** Every adapter reports usage once, at the end of a stream, so by the time a call's cost is known it has been spent — aborting the last delta of an answer the user already paid for throws it away and leaves the timeline half-written. `check()` refuses *before* a call; `record()` writes the call, publishes `cost.updated` with `breach` set, and lets the stream finish. The task therefore pauses *between* steps, which is where a pause belongs. `ModelRouter.chat(role, req, task_id=…)` is where both happen.
+- **There are token ceilings as well as cost ceilings.** An unknown price is `None` and is never summed as zero, so a `custom` gateway or an unlisted OpenRouter model would never move a cents total at all. `task_tokens` / `day_tokens` are the backstop for exactly that — set far above anything an honest task reaches, so a priced provider always meets its cents ceiling first. Defaults: **$1.00 per task, $10.00 per day**, 10M / 100M tokens.
+- **A total that is missing a price says so.** `Spend` carries `unpriced_calls` alongside `cents`, and the message reads *at least $0.12* rather than presenting a short number as a complete one.
+
+The ledger is durable (`usage`, § 7) because a per-day ceiling that an app restart clears is not a ceiling, and the day it counts is the **local** one — a promise about "today" is a promise about the user's day.
 
 `storage/vault.py` (`P1-07`) is the only place in the core that reads or writes a key. `KeyVault` keeps one key per provider under the single Credential Manager target `Aegis`, and:
 
@@ -283,9 +291,11 @@ audit(id, ts, actor, event, payload_json, prev_hash, hash)         -- hash-chain
 facts(id, scope, key, value, source_task_id, created_at)           -- durable agent memory
 journal(id, task_id, step_id, op, forward_json, undo_json, applied, created_at, undone_at)  -- see RECOVERY.md
 settings(key, value_json)
+usage(id, task_id, ts, day, role, provider_id, model, input_tokens, output_tokens, cost_cents)
 ```
 
 - Implemented in `storage/migrations/m0001_initial.py` (P0-10): `STRICT` tables, UTC ISO-8601 `TEXT` timestamps, 0/1 `INTEGER` booleans, `json_valid` on every `*_json` column, `CHECK`s on status/risk/decision/choice, `cost_cents` is `REAL`, `audit` append-only by trigger. Every connection gets WAL + `synchronous=FULL` + foreign keys (`storage/db.py`). Schema version = `PRAGMA user_version`; the core creates or migrates the DB before its handshake line.
+- `usage` (P0-10's schema plus `m0002_usage.py`, P1-09) is one row per model call, and the only durable record of what was spent. `day` is the **local** date, because that is the unit the per-day ceiling promises. `cost_cents` is **nullable**, and `NULL` means *the price is unknown* — never 0; a local model is a real `0.0`. `task_id` is nullable, for a call made outside any task (a Models *Test*).
 - `audit.hash = SHA256(prev_hash || ts || actor || event || payload_json)`. A verifier command (`aegis verify-log`) re-walks the chain. Tamper-evident, and the basis of the "prove what the agent did" story.
 - Screenshots live in `%LOCALAPPDATA%\Aegis\obs\<task>\<step>.webp`, auto-purged after N days (Settings, default 14).
 - **No task content, screenshot, or prompt ever leaves the machine** except to the model provider the user chose. There is no Aegis backend in v1.
@@ -398,6 +408,21 @@ Wire details (P0-08, `server/hub.py` + `server/routes.py`; model `StreamEvent` i
 - The upgrade goes through the same session auth as REST (token, no `Origin`, peer PID). A refused upgrade is a bare HTTP 403.
 - No `since` → replay everything retained, then live. `since=N` → replay exactly the events after `N`, or refuse; a stream with a hole in it is never sent.
 - The stream is one-way. Commands go over REST.
+- **`cost.updated`** (P1-09) is published by the budget guard after every model call, with `task_id` set to the task it was made for, or `null` for a call outside one. Its payload is numbers and model ids only — nothing a prompt, a path or a key could be in:
+
+  ```jsonc
+  {
+    "call":   { "role": "planner", "provider_id": "openai", "model": "gpt-4o",
+                "input_tokens": 1000, "output_tokens": 500, "cost_cents": 0.75 },
+    "task":   { "cents": 0.75, "tokens": 1500, "unpriced_calls": 0 },
+    "day":    { "cents": 0.75, "tokens": 1500, "unpriced_calls": 0 },
+    "limits": { "task_cents": 100.0, "day_cents": 1000.0,
+                "task_tokens": 10000000, "day_tokens": 100000000 },
+    "breach": null                  // or "task_cents" | "task_tokens" | "day_cents" | "day_tokens"
+  }
+  ```
+
+  `cost_cents` is `null` when the price is unknown, never 0, and `unpriced_calls` says how many calls a total therefore leaves out. A `breach` that is not `null` means the **next** call will be refused: the UI pauses the task and offers *Raise limit* / *Stop* (`UI.md § 9`).
 - Until P6-06, replay comes from memory (last 2048 events), and `seq` restarts at 1 when the core restarts. **A client must drop its `since` cursor whenever MAIN's supervisor starts a new core.** A cursor ahead of the core is refused, but one that happens to be behind a new core's `seq` cannot be told apart.
 
 | Close code | Meaning | Client should |

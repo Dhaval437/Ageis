@@ -14,11 +14,13 @@ wiring from a `ProviderId` to a client is proved rather than assumed.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
+from pathlib import Path
 from typing import Any, cast
 
 import httpx2
 import pytest
+from aegis_core.models.budget import BudgetExceededError, BudgetGuard, BudgetLimits
 from aegis_core.models.provider import (
     ProviderAuthError,
     ProviderCapabilityError,
@@ -56,8 +58,12 @@ from aegis_core.models.schemas import (
     TextDelta,
     TextPart,
     ToolDef,
+    Usage,
+    UsageDelta,
     UserMessage,
 )
+from aegis_core.storage.db import bootstrap, connect
+from aegis_core.storage.usage import UsageLedger
 from pydantic import ValidationError
 
 A_KEY = "sk-test-key-do-not-use-0123456789"
@@ -170,6 +176,7 @@ def a_router(
     planner: RoleRoute | None = None,
     grounder: RoleRoute | None = None,
     utility: RoleRoute | None = None,
+    guard: BudgetGuard | None = None,
 ) -> tuple[ModelRouter, FakePool]:
     default = RoleRoute(primary=ModelChoice(provider_id="openai", model="gpt-4o"))
     roles = RoleMap(
@@ -180,7 +187,7 @@ def a_router(
         }
     )
     pool = FakePool(providers)
-    return ModelRouter(roles, pool), pool
+    return ModelRouter(roles, pool, guard=guard), pool
 
 
 async def collect(stream: AsyncIterator[ChatDelta]) -> list[ChatDelta]:
@@ -544,6 +551,126 @@ async def test_three_links_are_walked_in_order() -> None:
     await collect(router.chat("planner", a_request()))
 
     assert len(first.requests) == len(second.requests) == len(third.requests) == 1
+
+
+# ---------------------------------------------------------------------------
+# The budget guard (`P1-09`)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def guarded(tmp_path: Path) -> Iterator[Callable[[BudgetLimits], BudgetGuard]]:
+    """A factory for guards over one real ledger, so several can share a total."""
+    db_path = tmp_path / "aegis.db"
+    bootstrap(db_path)
+    with UsageLedger.open(db_path) as ledger:
+        yield lambda limits: BudgetGuard(ledger, limits=limits)
+
+
+def a_task(tmp_path: Path) -> int:
+    conn = connect(tmp_path / "aegis.db")
+    try:
+        cursor = conn.execute(
+            "INSERT INTO tasks (title, goal, status, created_at)"
+            " VALUES ('t', 'g', 'RUNNING', '2026-09-20T12:00:00.000Z')"
+        )
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def priced(cents: float) -> tuple[ChatDelta, ...]:
+    return (
+        TextDelta(text="on it"),
+        UsageDelta(usage=Usage(input_tokens=1_000, output_tokens=500, cost_cents=cents)),
+        DoneDelta(finish_reason="stop"),
+    )
+
+
+async def test_a_router_without_a_guard_is_unchanged() -> None:
+    primary = FakeProvider(deltas=priced(4.5))
+    router, _ = a_router({"openai": primary})
+    assert [d.type for d in await collect(router.chat("planner", a_request()))] == [
+        "text",
+        "usage",
+        "done",
+    ]
+
+
+async def test_what_a_call_cost_is_recorded_against_the_model_that_answered(
+    tmp_path: Path, guarded: Callable[[BudgetLimits], BudgetGuard]
+) -> None:
+    task_id = a_task(tmp_path)
+    guard = guarded(BudgetLimits())
+    primary = FakeProvider(deltas=priced(4.5))
+    router, _ = a_router({"openai": primary}, guard=guard)
+
+    await collect(router.chat("planner", a_request(), task_id=task_id))
+
+    status = guard.status(task_id)
+    assert status.task.cents == pytest.approx(4.5)
+    assert status.task.tokens == 1_500
+
+
+async def test_a_ceiling_already_reached_stops_the_call_before_the_wire(
+    tmp_path: Path, guarded: Callable[[BudgetLimits], BudgetGuard]
+) -> None:
+    """§ 5.3: on breach, pause and ask — not one more request and then pause."""
+    task_id = a_task(tmp_path)
+    guard = guarded(BudgetLimits(task_cents=4.0))
+    primary = FakeProvider(deltas=priced(4.5))
+    router, _ = a_router({"openai": primary}, guard=guard)
+
+    await collect(router.chat("planner", a_request(), task_id=task_id))
+    assert len(primary.requests) == 1
+
+    with pytest.raises(BudgetExceededError) as raised:
+        await collect(router.chat("planner", a_request(), task_id=task_id))
+
+    assert raised.value.ceiling == "task_cents"
+    assert len(primary.requests) == 1, "a second request reached the provider"
+
+
+async def test_the_call_that_crosses_the_ceiling_still_finishes(
+    tmp_path: Path, guarded: Callable[[BudgetLimits], BudgetGuard]
+) -> None:
+    """The money is spent by the time usage arrives; throwing away the answer wastes it."""
+    task_id = a_task(tmp_path)
+    primary = FakeProvider(deltas=priced(99.0))
+    router, _ = a_router({"openai": primary}, guard=guarded(BudgetLimits(task_cents=1.0)))
+
+    deltas = await collect(router.chat("planner", a_request(), task_id=task_id))
+
+    assert [delta.type for delta in deltas] == ["text", "usage", "done"]
+    assert primary.stream_finished is True
+
+
+async def test_usage_is_attributed_to_the_fallback_that_actually_answered(
+    tmp_path: Path, guarded: Callable[[BudgetLimits], BudgetGuard]
+) -> None:
+    task_id = a_task(tmp_path)
+    guard = guarded(BudgetLimits())
+    primary = FakeProvider(error=a_transient())
+    secondary = FakeProvider("google", deltas=priced(2.0))
+    router, _ = a_router(
+        {"openai": primary, "google": secondary}, planner=two_provider_route(), guard=guard
+    )
+
+    await collect(router.chat("planner", a_request(), task_id=task_id))
+
+    assert guard.status(task_id).task.cents == pytest.approx(2.0)
+
+
+async def test_a_call_outside_a_task_counts_towards_the_day(
+    guarded: Callable[[BudgetLimits], BudgetGuard],
+) -> None:
+    guard = guarded(BudgetLimits())
+    router, _ = a_router({"openai": FakeProvider(deltas=priced(3.0))}, guard=guard)
+
+    await collect(router.chat("utility", a_request()))
+
+    assert guard.status().day.cents == pytest.approx(3.0)
 
 
 # ---------------------------------------------------------------------------
