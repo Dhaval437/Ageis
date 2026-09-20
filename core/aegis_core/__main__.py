@@ -32,6 +32,7 @@ from fastapi import FastAPI
 
 from aegis_core import __version__
 from aegis_core.logging_setup import configure_logging
+from aegis_core.models.service import ModelService
 from aegis_core.parent_watch import ParentWatch
 from aegis_core.server.app import create_app
 from aegis_core.server.auth import SessionAuth
@@ -42,7 +43,11 @@ from aegis_core.server.handshake import (
     bind_loopback,
     read_token,
 )
+from aegis_core.server.hub import EventHub
 from aegis_core.storage.db import StorageError, bootstrap
+from aegis_core.storage.settings import SettingsStore
+from aegis_core.storage.usage import UsageLedger
+from aegis_core.storage.vault import KeyVault, VaultError
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +60,23 @@ EXIT_STORAGE_FAILED: Final = 4
 #: How long uvicorn gets to unwind before the process ends outright. Together with
 #: the 0.5 s poll interval this keeps the core inside § 3.1 step 6's 2 s budget.
 SHUTDOWN_GRACE_S: Final = 1.0
+
+
+def _model_service(hub: EventHub) -> ModelService | None:
+    """The Models screen's service, or `None` if this machine cannot give it one.
+
+    `bootstrap()` has already proved the database, so the one thing that can fail here is
+    the vault: `KeyVault` refuses to exist without Windows Credential Manager rather than
+    quietly storing keys somewhere else (invariant 9, `P1-07`). That is a machine a user
+    cannot save a key on, which is a Models screen that says so — not a core that refuses
+    to start, since everything else still works.
+    """
+    try:
+        vault = KeyVault()
+    except VaultError as error:
+        log.error("core.vault_unavailable", extra={"error": str(error)})
+        return None
+    return ModelService(SettingsStore.open(), vault, UsageLedger.open(), publisher=hub)
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -134,6 +156,7 @@ def main(
         extra={"version": __version__, "port": args.port, "log_file": str(log_file)},
     )
 
+    models: ModelService | None = None
     token = read_token(stdin if stdin is not None else sys.stdin)
     bootstrap()
     sock = bind_loopback(args.port)
@@ -141,7 +164,9 @@ def main(
         port = sock.getsockname()[1]
         supervisor_pid = args.supervisor_pid if args.supervisor_pid is not None else os.getppid()
         auth = SessionAuth(token=token, supervisor_pid=supervisor_pid, local_port=port)
-        app = create_app(auth)
+        hub = EventHub()
+        models = _model_service(hub)
+        app = create_app(auth, hub, models)
 
         announce(
             Handshake(port=port, pid=os.getpid(), version=__version__),
@@ -156,6 +181,11 @@ def main(
         _serve(app, sock, supervisor_pid=supervisor_pid)
     finally:
         sock.close()
+        if models is not None:
+            # The app's lifespan releases the provider pools; these are the two database
+            # connections, and they have to go even on the paths where the server never
+            # ran and the lifespan therefore never did.
+            models.close()
 
 
 if __name__ == "__main__":

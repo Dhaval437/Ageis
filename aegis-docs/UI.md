@@ -231,7 +231,16 @@ Three sections, all directly editable:
 Plus scope management: named scopes (Work Files, Downloads, Photos…), each a folder list + app list, with a "what this allows" plain-English summary.
 
 ### 8.4 Models
-One card per role (`Planner`, `Grounder`, `Utility`): provider dropdown → model dropdown (live from `/models/catalog`) → params (temperature, max tokens) → a **fallback chain** builder. Below: **Providers** — add a provider, paste key, `Test` button showing latency + a real completion, key displayed masked. A "Local (Ollama)" card auto-detects `localhost:11434` and shows installed models with a **"Nothing leaves your PC"** badge. Budget controls: per-task and per-day ceilings, with a live spend bar.
+One card per role (`Planner`, `Grounder`, `Utility`): provider dropdown → model dropdown (from `/models/catalog`) → params (temperature, max tokens) → a **fallback chain** builder, bounded at four links because the router is. Below: **Providers** — paste a key, `Test` button showing what the provider said and how long it took, key displayed masked. A "Local (Ollama)" card auto-detects `127.0.0.1:11434` and shows installed models with a **"Nothing leaves your PC"** badge. Budget controls: per-task and per-day ceilings, with a live spend bar.
+
+Built in `P1-10`. Four things it does that are not obvious from the sketch:
+
+- **Edits go into a draft.** Nothing is sent until *Save changes*; *Discard* puts it back. The core is what validates — a chain that repeats a model, or an address a key may not be sent to, comes back as one sentence — so the screen does not duplicate rules the user cannot see.
+- **A provider whose models cannot be listed gets a text field, not an empty dropdown.** `openrouter`, `nvidia` and a custom gateway serve catalogues no build-time table can hold, and the catalogue is built offline on purpose. A model the catalogue no longer lists keeps its value, falls back to a text field and says so, rather than rendering a blank `<select>` and losing the setting.
+- **The spend bar is a function of the stream.** `GET /models/spend` gives it a first value; every one after comes from `cost.updated`. It is amber from four fifths of the ceiling and red at it, and says which in **words** as well as colour. A total missing a price reads *at least $x*.
+- **A key is typed into a `password` field with autocomplete off, and is gone from the renderer the moment it is saved** — the catalogue is reloaded and what comes back is `sk-…abcd`. Nothing reads a key back; there is no route that could.
+
+A role with no model is called out at the top of the screen, because a task cannot run until all three are mapped.
 
 ### 8.5 Logs
 Two tabs. **Activity** — the human-readable audit stream, searchable, exportable. **Diagnostics** — raw core logs with level filter, a "copy for bug report" button that redacts paths and keys. A `Verify log integrity` button runs the hash-chain check and shows ✓ *N entries verified, chain intact*.

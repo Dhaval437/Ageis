@@ -13,6 +13,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { EngineUnavailable } from '@/components/EngineUnavailable';
+import { ModelsScreen } from '@/components/models/ModelsScreen';
 import { Button } from '@/components/ui/button';
 import { engineStatusView } from '@/lib/engine-status';
 import { cn } from '@/lib/utils';
@@ -60,11 +61,17 @@ export function AppShell(): ReactElement {
       <div className="flex min-h-0 flex-1">
         <Rail activeId={active.id} onSelect={setActiveId} />
         <main
-          className="flex min-w-0 flex-1 items-center justify-center border-r border-border"
+          className={cn(
+            'flex min-w-0 flex-1 border-r border-border',
+            // A screen with content fills the panel; a placeholder is centred in it.
+            engineGone || active.id !== 'models' ? 'items-center justify-center' : 'items-stretch',
+          )}
           aria-live="polite"
         >
           {engineGone ? (
             <EngineUnavailable />
+          ) : active.id === 'models' ? (
+            <ModelsScreen />
           ) : (
             <p className="p-6 text-base text-text-dim">{active.empty}</p>
           )}

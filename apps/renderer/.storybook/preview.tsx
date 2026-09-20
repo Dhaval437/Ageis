@@ -1,4 +1,5 @@
 import type { Decorator, Preview } from '@storybook/react-vite';
+import { INITIAL_MODELS, useModelsStore } from '../src/stores/models';
 import { INITIAL_RECOVERY, useRecoveryStore } from '../src/stores/recovery';
 import { INITIAL_STREAM, useStreamStore } from '../src/stores/stream';
 import { INITIAL_WINDOW, useWindowStore } from '../src/stores/window';
@@ -35,12 +36,13 @@ const preview: Preview = {
   },
   initialGlobals: { theme: 'dark' },
   decorators: [withTheme],
-  // Every story starts from an empty stream, a restored window and an idle
-  // recovery screen; a story that needs state sets it.
+  // Every story starts from an empty stream, a restored window, an idle recovery
+  // screen and an unloaded Models screen; a story that needs state sets it.
   beforeEach: () => {
     useStreamStore.setState(INITIAL_STREAM);
     useWindowStore.setState(INITIAL_WINDOW);
     useRecoveryStore.setState(INITIAL_RECOVERY);
+    useModelsStore.setState(INITIAL_MODELS);
   },
   parameters: {
     layout: 'fullscreen',

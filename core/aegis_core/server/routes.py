@@ -16,9 +16,11 @@ from typing import Final
 
 import anyio
 from anyio.abc import TaskGroup
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from aegis_core import __version__
+from aegis_core.models.schemas import ProviderId
+from aegis_core.models.service import ModelService
 from aegis_core.server.hub import (
     CLOSE_INVALID_SINCE,
     CLOSE_REPLAY_UNAVAILABLE,
@@ -28,7 +30,19 @@ from aegis_core.server.hub import (
     ReplayUnavailableError,
     Subscription,
 )
-from aegis_core.server.schemas import HealthResponse
+from aegis_core.server.schemas import (
+    HealthResponse,
+    KeyRequest,
+    KeyResponse,
+    ModelCatalog,
+    SettingsRequest,
+    SettingsResponse,
+    SpendResponse,
+    ValidateRequest,
+    ValidateResponse,
+)
+from aegis_core.storage.db import StorageError
+from aegis_core.storage.vault import VaultError
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +61,118 @@ async def health(request: Request) -> HealthResponse:
         version=__version__,
         uptime=round(time.monotonic() - started, 3),
     )
+
+
+# ---------------------------------------------------------------------------
+# The Models screen (`ARCHITECTURE.md § 9.1`, `UI.md § 8.4`)
+# ---------------------------------------------------------------------------
+#
+# Every one of these is a thin shell over `models/service.py`. Three rules hold across
+# all of them, and they are why the shell exists at all:
+#
+# * **A key travels in and never out.** `PUT /models/keys/{id}` is the only route that
+#   accepts one, and nothing answers with one — `has_key` and `mask_key()`'s `sk-…abcd`
+#   are the whole vocabulary (`ARCHITECTURE.md § 5.3`).
+# * **A refusal the user can act on is a 400 with the service's own message**, which is
+#   written for them and quotes neither a key nor an address (`P1-05`, `P1-07`).
+# * **A subsystem that is not there answers 503**, not a 500. The core can be served
+#   without a `ModelService` — every test in `tests/server` does — and a screen told
+#   *unavailable* can say so.
+
+
+def _service(request: Request) -> ModelService:
+    """The app's `ModelService`, or a 503 the renderer can render."""
+    service: ModelService | None = getattr(request.app.state, "models", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="The model layer is not available.")
+    return service
+
+
+@router.get("/models/catalog", response_model=ModelCatalog)
+async def models_catalog(request: Request) -> ModelCatalog:
+    """Every provider, its models, and whether a key is saved for it."""
+    return await _service(request).catalog()
+
+
+@router.post("/models/validate", response_model=ValidateResponse)
+async def models_validate(request: Request, body: ValidateRequest) -> ValidateResponse:
+    """The *Test* button: one real call to the provider, timed. Never 500s for a bad key."""
+    return await _service(request).validate(body.provider_id)
+
+
+@router.put("/models/keys/{provider_id}", response_model=KeyResponse)
+async def models_set_key(
+    request: Request, provider_id: ProviderId, body: KeyRequest
+) -> KeyResponse:
+    """Save the key for one provider.
+
+    The body is the only place in the whole surface a key appears, and it is never
+    echoed: the answer is the masked form. Every refusal comes from `KeyVault`, whose
+    messages say what was wrong without quoting any part of what was sent.
+    """
+    service = _service(request)
+    try:
+        masked = service.set_key(provider_id, body.key)
+    except VaultError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return KeyResponse(provider_id=provider_id, has_key=masked is not None, masked_key=masked)
+
+
+@router.delete("/models/keys/{provider_id}", response_model=KeyResponse)
+async def models_delete_key(request: Request, provider_id: ProviderId) -> KeyResponse:
+    """Remove the key for one provider. Removing one that is not there is not an error."""
+    service = _service(request)
+    try:
+        service.delete_key(provider_id)
+    except VaultError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return KeyResponse(provider_id=provider_id, has_key=False, masked_key=None)
+
+
+@router.get("/models/spend", response_model=SpendResponse)
+async def models_spend(request: Request) -> SpendResponse:
+    """Today's total and the ceilings. A first value for the meter, not a poll."""
+    return _service(request).spend()
+
+
+@router.get("/settings", response_model=SettingsResponse)
+async def get_settings(request: Request) -> SettingsResponse:
+    """Everything the user has configured. Today that is the model layer and nothing else."""
+    return SettingsResponse(models=_service(request).settings())
+
+
+@router.put("/settings", response_model=SettingsResponse)
+async def put_settings(request: Request, body: SettingsRequest) -> SettingsResponse:
+    """Replace the settings document, whole. Answers with what was actually stored.
+
+    A role chain that cannot be routed, or an address a key may not be sent to, is a 400
+    naming the problem — refused here rather than at the first task, which is the whole
+    reason the screen exists.
+    """
+    service = _service(request)
+    try:
+        stored = await service.save_settings(body.models)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=_first_message(error)) from error
+    except StorageError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return SettingsResponse(models=stored)
+
+
+def _first_message(error: ValueError) -> str:
+    """One sentence out of a `ValidationError`, which is a list of them.
+
+    Pydantic's own string is a multi-line report with a documentation URL in it, written
+    for whoever wrote the request — and the request came from a screen, so what reaches
+    the user has to be the sentence the validator raised.
+    """
+    errors = getattr(error, "errors", None)
+    if callable(errors):
+        messages = [str(item.get("msg", "")).removeprefix("Value error, ") for item in errors()]
+        first = next((message for message in messages if message), "")
+        if first:
+            return first
+    return str(error).splitlines()[0]
 
 
 @router.websocket("/stream")

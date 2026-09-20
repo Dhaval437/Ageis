@@ -98,15 +98,15 @@ aegis/
 │     └─ vite.config.ts
 ├─ core/                          # Python agent
 │  ├─ aegis_core/
-│  │  ├─ server/                  # FastAPI app, routes, ws hub, auth
+│  │  ├─ server/                  # FastAPI app, routes, ws hub, auth, typegen
 │  │  ├─ agent/                   # loop.py, planner.py, memory.py, context.py
-│  │  ├─ models/                  # router.py, providers/*.py, schemas.py
+│  │  ├─ models/                  # router.py, providers/*.py, schemas.py, budget.py, service.py
 │  │  ├─ tools/                   # registry.py + one module per tool family
 │  │  ├─ perception/              # screen.py, uia_tree.py, ocr.py, grounding.py
 │  │  ├─ actuation/               # input.py (SendInput), window.py, preempt.py
 │  │  ├─ guardian/                # policy.py, rules.yaml, risk.py, approvals.py
 │  │  ├─ recovery/                # journal.py, undo.py, snapshot.py
-│  │  ├─ storage/                 # db.py, migrations/, audit.py, vault.py
+│  │  ├─ storage/                 # db.py, migrations/, audit.py, vault.py, usage.py, settings.py
 │  │  └─ telemetry/               # local metrics only; OFF by default
 │  ├─ tests/
 │  └─ pyproject.toml
@@ -386,13 +386,38 @@ POST /tasks/{id}/message          -> inject a mid-run instruction ("actually, us
 POST /approvals/{id}              -> {choice: allow|deny|allow_always, scope?}
 GET  /tasks/{id}/steps            -> [Step]
 POST /undo/{journal_id}
-GET  /settings  PUT /settings
-POST /models/validate             -> per-provider key check
-GET  /models/catalog              -> live model list per provider
+GET  /settings  PUT /settings     -> {models: ModelSettings}; PUT replaces whole sections
+POST /models/validate             -> per-provider key check   body: {provider_id}
+GET  /models/catalog              -> model list per provider, + key and address state
+PUT  /models/keys/{provider_id}   -> save a key    body: {key}   -> {has_key, masked_key}
+DELETE /models/keys/{provider_id} -> remove a key
+GET  /models/spend                -> today's total + the ceilings it is measured against
 GET  /scopes  POST /scopes
 POST /audit/verify                -> chain integrity result
 POST /audit/export                -> signed .zip report
 ```
+
+The Models-screen routes (`P1-10`) are a thin shell over `models/service.py`, and
+three rules hold across all of them:
+
+- **A key travels in and never out.** `PUT /models/keys/{provider_id}` is the only
+  route that accepts one. Nothing answers with one: `has_key` and `mask_key()`'s
+  `sk-…abcd` are the whole vocabulary (`§ 5.3`), and there is no `GET` for a key.
+- **A refusal the user can act on is a `400` carrying one sentence** — the vault's
+  or `normalise_base_url`'s, both written for the user and quoting neither a key nor
+  an address. A `422` (a malformed request) repeats **none** of what was sent: the
+  renderer is a hostile caller that displays scraped screen text and is the field a
+  key is typed into, so FastAPI's default echo of the offending input is replaced
+  app-wide by a fixed message plus a logged field *name*.
+- **A core with no model layer answers `503`**, not `500` — the same "this subsystem
+  is not there" every unbuilt namespace already answers on the bridge (`§ 9.3`).
+
+`GET /models/catalog` makes **no call to a vendor**. It is built from this build's own
+model tables plus whatever Ollama on loopback answers, so the Models screen still works
+on a machine with no internet — which is the machine whose user most needs to open it.
+A provider whose catalogue cannot be enumerated offline (`nvidia`, `openrouter`,
+`custom`, and any model newer than the pinned tables) reports `free_text_model` and the
+user types the model id.
 
 ### 9.2 WebSocket `/v1/stream` — the live event bus
 

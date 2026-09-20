@@ -5,6 +5,18 @@
  * Regenerate with `pnpm gen:types`; `pnpm test` fails while this file is stale.
  */
 
+export const PROVIDER_IDS = [
+  'openai',
+  'anthropic',
+  'google',
+  'nvidia',
+  'openrouter',
+  'ollama',
+  'custom',
+] as const;
+
+export type ProviderId = (typeof PROVIDER_IDS)[number];
+
 /** Risk tiers every tool call is classified into. See `REMEMBER.md § 6`. */
 export const RISK_TIERS = ['SAFE', 'CAUTION', 'DANGEROUS', 'FORBIDDEN'] as const;
 
@@ -49,4 +61,173 @@ export interface StreamEvent {
   readonly type: EventType;
   /** Type-specific body. */
   readonly payload: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * One model a provider can serve, as the Models screen lists it.
+ *
+ * A price of `null` is **unknown, never free** (`models/schemas.py`, `Capabilities`);
+ * a local model is `0.0`, which says the price is known and is nothing.
+ */
+export interface ModelInfo {
+  /** The provider's own model id, sent on the wire as-is. */
+  readonly id: string;
+  readonly vision: boolean;
+  readonly tool_calling: boolean;
+  readonly json_mode: boolean;
+  /** Total tokens the model accepts, in + out. */
+  readonly ctx_window: number;
+  /** US dollars per million input tokens; `null` is unknown. */
+  readonly cost_per_mtok_input: number | null;
+  readonly cost_per_mtok_output: number | null;
+}
+
+/**
+ * One provider card on the Models screen.
+ *
+ * It never carries a key. `masked_key` is `mask_key()`'s `sk-…abcd` and nothing else
+ * (`ARCHITECTURE.md § 5.3`), and it is `null` when no key is saved.
+ */
+export interface ProviderCatalog {
+  readonly provider_id: ProviderId;
+  /** What the card is called, e.g. `Local (Ollama)`. */
+  readonly label: string;
+  /** Runs on this machine: the *Nothing leaves your PC* badge. */
+  readonly local: boolean;
+  /** `false` for an endpoint with nobody to authenticate. */
+  readonly requires_key: boolean;
+  readonly has_key: boolean;
+  /** `sk-…abcd`, never the key. */
+  readonly masked_key: string | null;
+  /** The address, where the user may set one. */
+  readonly base_url: string | null;
+  /** Whether this card shows an address field. */
+  readonly editable_base_url: boolean;
+  /** What this build knows this provider serves. May be empty. */
+  readonly models: ReadonlyArray<ModelInfo>;
+  /** No enumerable catalogue: the user types a model id instead of picking one. */
+  readonly free_text_model: boolean;
+  /** Why the list is empty, when there is a reason worth showing. */
+  readonly detail: string | null;
+}
+
+/** `GET /v1/models/catalog` — every provider and what it can serve. */
+export interface ModelCatalog {
+  readonly providers: ReadonlyArray<ProviderCatalog>;
+}
+
+/** One model in one slot of one role's chain, as the screen saves it. */
+export interface ModelChoiceSpec {
+  readonly provider_id: ProviderId;
+  readonly model: string;
+  readonly temperature: number | null;
+  readonly max_output_tokens: number | null;
+}
+
+/** Who answers for one role, and who answers when they cannot. */
+export interface RoleRouteSpec {
+  readonly primary: ModelChoiceSpec;
+  readonly fallbacks: ReadonlyArray<ModelChoiceSpec>;
+}
+
+/**
+ * The four ceilings. An explicit `null` is *no ceiling on this one*.
+ *
+ * The defaults are `models/budget.py`'s, restated rather than imported because that
+ * module already imports this one for `EventType` and a cycle is the worse trade. A
+ * test asserts the two agree, the same way `storage/usage.py`'s `UsageRole` is held to
+ * `models/router.py`'s `ModelRole`.
+ *
+ * Restating them also makes an omitted `limits` mean *the defaults* rather than *no
+ * ceilings at all*, so a settings document written by an older build cannot silently
+ * remove every ceiling the user was relying on.
+ */
+export interface BudgetLimitsSpec {
+  readonly task_cents: number | null;
+  readonly day_cents: number | null;
+  readonly task_tokens: number | null;
+  readonly day_tokens: number | null;
+}
+
+/**
+ * Everything the Models screen owns, as it is saved and read back.
+ *
+ * A role is `null` until the user maps it — the state the app is in on first run, and
+ * the reason this is not a `RoleMap` (which requires all three).
+ */
+export interface ModelSettings {
+  readonly planner: RoleRouteSpec | null;
+  readonly grounder: RoleRouteSpec | null;
+  readonly utility: RoleRouteSpec | null;
+  readonly limits: BudgetLimitsSpec;
+  /** The user's OpenAI-compatible gateway. */
+  readonly custom_base_url: string | null;
+  /** `null` means the detected default. */
+  readonly ollama_base_url: string | null;
+}
+
+/** `GET /v1/settings` and the answer to `PUT /v1/settings`. */
+export interface SettingsResponse {
+  readonly models: ModelSettings;
+}
+
+/** The body of `PUT /v1/settings`. Whole sections, never a patch. */
+export interface SettingsRequest {
+  readonly models: ModelSettings;
+}
+
+/**
+ * The body of `PUT /v1/models/keys/{provider_id}`.
+ *
+ * `repr=False` so the key cannot reach a log line, a traceback or an error payload
+ * through a model repr — the same guard `ImagePart.data` carries. It is deliberately
+ * **unconstrained** here: every refusal comes from `storage/vault.py`, whose messages
+ * quote nothing, because a Pydantic validation error echoes the value it rejected.
+ */
+export interface KeyRequest {
+  /** The provider API key. Written, never read back. */
+  readonly key: string;
+}
+
+/** What a key write answers with: the masked form, never the key. */
+export interface KeyResponse {
+  readonly provider_id: ProviderId;
+  readonly has_key: boolean;
+  /** `sk-…abcd`, never the key. */
+  readonly masked_key: string | null;
+}
+
+/** The body of `POST /v1/models/validate` — the Models screen's *Test* button. */
+export interface ValidateRequest {
+  readonly provider_id: ProviderId;
+}
+
+/** What *Test* found out. `detail` is shown to the user and holds no key material. */
+export interface ValidateResponse {
+  readonly provider_id: ProviderId;
+  readonly valid: boolean;
+  /** Plain, second person, no key and no response body. */
+  readonly detail: string;
+  /** How long the provider took to answer. */
+  readonly latency_ms: number;
+}
+
+/** What some slice of the usage ledger adds up to (`storage/usage.py`, `Spend`). */
+export interface SpendTotals {
+  /** The sum of the prices that are known. */
+  readonly cents: number;
+  readonly tokens: number;
+  /** Calls left out of `cents`; non-zero means *at least* that much. */
+  readonly unpriced_calls: number;
+}
+
+/**
+ * `GET /v1/models/spend` — what the spend meter starts from.
+ *
+ * It is a first value, not a poll: `cost.updated` (`ARCHITECTURE.md § 9.2`) keeps the
+ * meter live, and invariant 15 says the UI is a function of the stream.
+ */
+export interface SpendResponse {
+  readonly day: SpendTotals;
+  readonly limits: BudgetLimitsSpec;
 }
