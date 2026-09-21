@@ -47,6 +47,12 @@ SM_YVIRTUALSCREEN: Final = 77
 SM_CXVIRTUALSCREEN: Final = 78
 SM_CYVIRTUALSCREEN: Final = 79
 
+#: `DWMWINDOWATTRIBUTE` values. The extended frame bounds are the window as drawn —
+#: `GetWindowRect` also counts the invisible resize border around it — and are always
+#: in physical pixels. `CLOAKED` is non-zero for a window on another virtual desktop.
+DWMWA_EXTENDED_FRAME_BOUNDS: Final = 9
+DWMWA_CLOAKED: Final = 14
+
 # ---------------------------------------------------------------------------
 # Structures — field names are Win32's (see the N815 exemption in pyproject.toml)
 # ---------------------------------------------------------------------------
@@ -76,6 +82,7 @@ MONITORENUMPROC: Final = ctypes.WINFUNCTYPE(
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 shcore = ctypes.WinDLL("shcore")
+dwmapi = ctypes.WinDLL("dwmapi")
 
 user32.SetProcessDpiAwarenessContext.argtypes = (wintypes.HANDLE,)
 user32.SetProcessDpiAwarenessContext.restype = wintypes.BOOL
@@ -112,6 +119,27 @@ shcore.GetDpiForMonitor.argtypes = (
     ctypes.POINTER(wintypes.UINT),
 )
 shcore.GetDpiForMonitor.restype = wintypes.LONG
+
+user32.IsWindow.argtypes = (wintypes.HWND,)
+user32.IsWindow.restype = wintypes.BOOL
+
+user32.IsIconic.argtypes = (wintypes.HWND,)
+user32.IsIconic.restype = wintypes.BOOL
+
+user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+user32.IsWindowVisible.restype = wintypes.BOOL
+
+user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+user32.GetWindowRect.restype = wintypes.BOOL
+
+# HRESULT as a plain LONG, for the same reason as `GetDpiForMonitor`.
+dwmapi.DwmGetWindowAttribute.argtypes = (
+    wintypes.HWND,
+    wintypes.DWORD,
+    wintypes.LPVOID,
+    wintypes.DWORD,
+)
+dwmapi.DwmGetWindowAttribute.restype = wintypes.LONG
 
 # ---------------------------------------------------------------------------
 # Thin wrappers
@@ -189,3 +217,45 @@ def virtual_screen() -> tuple[int, int, int, int]:
         int(user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)),
         int(user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)),
     )
+
+
+def is_window(hwnd: int) -> bool:
+    return bool(user32.IsWindow(hwnd))
+
+
+def is_minimised(hwnd: int) -> bool:
+    return bool(user32.IsIconic(hwnd))
+
+
+def is_window_visible(hwnd: int) -> bool:
+    return bool(user32.IsWindowVisible(hwnd))
+
+
+def is_cloaked(hwnd: int) -> bool:
+    """True if DWM is hiding the window — another virtual desktop, or a suspended app.
+
+    A failed query answers `False`: the window then gets the visibility checks
+    every other window gets, rather than being refused on a guess.
+    """
+    cloaked = wintypes.DWORD()
+    result = dwmapi.DwmGetWindowAttribute(
+        hwnd, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked)
+    )
+    return result == 0 and cloaked.value != 0
+
+
+def window_bounds(hwnd: int) -> wintypes.RECT | None:
+    """The window as drawn, in physical pixels, or `None` if Windows would not say.
+
+    DWM's extended frame bounds first; `GetWindowRect` only if DWM will not answer,
+    in which case the rectangle includes the invisible resize border.
+    """
+    rect = wintypes.RECT()
+    result = dwmapi.DwmGetWindowAttribute(
+        hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(rect), ctypes.sizeof(rect)
+    )
+    if result == 0:
+        return rect
+    if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return rect
+    return None

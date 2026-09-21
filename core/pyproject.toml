@@ -20,6 +20,10 @@ dependencies = [
   # The key vault (P1-07). Only its Windows Credential Manager backend is ever used —
   # that is DPAPI at rest, invariant 9 — and `storage/vault.py` refuses any other.
   "keyring>=25.0",
+  # Screen capture (P2-02). 10.2 is the first release with the `MSS` class spelling.
+  "mss>=10.2",
+  # Downscale + WebP encode of every observation (P2-02). Its wheels bundle libwebp.
+  "pillow>=11.0",
   "psutil>=7.0",     # peer-PID check on connect (ARCHITECTURE.md § 3.1 step 5)
   "pydantic>=2.12",
   "uvicorn>=0.38",

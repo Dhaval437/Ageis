@@ -27,7 +27,7 @@ A commercial, installable Windows desktop application. The user types (or speaks
 | Core web layer | **FastAPI + Uvicorn**, bound to `127.0.0.1` on an **ephemeral port** | REST for commands, WebSocket for the event stream. |
 | Local DB | **SQLite** via `sqlite3` (WAL mode) | Zero-config, transactional, file-portable. |
 | Secrets | **Windows DPAPI** via `keyring` (Windows Credential Manager backend) | OS-level encryption at rest, tied to the user account. |
-| Screen capture | **`mss`** (DXGI-backed), per-monitor DPI-aware | Fast, multi-monitor correct. |
+| Screen capture | **`mss`** (GDI `BitBlt`), per-monitor DPI-aware; **Pillow** downscales to ≤1280 px and encodes WebP | Multi-monitor correct, pure `ctypes`. A 3200×2000 capture + encode measures ~115 ms. |
 | UI tree | **`uiautomation`** (UIA3) with **`pywinauto`** as fallback | Semantic elements beat pixels; huge accuracy win. |
 | Input synthesis | **`SendInput` via `ctypes`** (own thin wrapper, not PyAutoGUI) | PyAutoGUI drops events and can't do scan codes; we need reliability + instant abort. |
 | Input monitoring | **Low-level hooks** (`WH_MOUSE_LL`, `WH_KEYBOARD_LL`) via `ctypes` | Required for the "user always wins" preemption rule (§8.3). |
