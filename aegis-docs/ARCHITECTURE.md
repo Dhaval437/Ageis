@@ -102,7 +102,7 @@ aegis/
 │  │  ├─ agent/                   # loop.py, planner.py, memory.py, context.py
 │  │  ├─ models/                  # router.py, providers/*.py, schemas.py, budget.py, service.py
 │  │  ├─ tools/                   # registry.py + one module per tool family
-│  │  ├─ perception/              # screen.py, uia_tree.py, ocr.py, grounding.py
+│  │  ├─ perception/              # display.py (+ win32.py), screen.py, uia_tree.py, ocr.py, grounding.py
 │  │  ├─ actuation/               # input.py (SendInput), window.py, preempt.py
 │  │  ├─ guardian/                # policy.py, rules.yaml, risk.py, approvals.py
 │  │  ├─ recovery/                # journal.py, undo.py, snapshot.py
@@ -251,6 +251,8 @@ Each planner call gets, in this order: system prompt (identity + safety rules + 
 ### 6.3 Perception (`perception/`)
 
 Hybrid, and **the UI tree comes first**:
+
+0. `display.py` owns the one coordinate space all of these share: **physical pixels on the virtual desktop** (primary top-left is `(0, 0)`, other monitors may be negative, the bounding box can hold dead zones). The core is made Per-Monitor V2 DPI aware at startup, and `query_layout()` refuses a thread that is not, rather than hand it virtualised coordinates. A `DisplayLayout` is a snapshot, never cached across a step; `verify_layout()` refuses a position measured under a layout that has since changed (`RECOVERY.md § 3.3`).
 
 1. `uia_tree.py` walks the foreground window's UIAutomation tree, prunes invisible/offscreen/zero-size nodes, and emits a compact list: `[id, role, name, value, bbox, enabled, focused]`. Cap at 200 elements by relevance.
 2. `screen.py` captures the monitor (or window) via `mss`, downscales, and — when a click target must be chosen visually — draws numbered boxes over candidate elements ("set-of-mark" prompting). The model returns an **element id**, not raw coordinates.

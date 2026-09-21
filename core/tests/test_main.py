@@ -14,6 +14,7 @@ from typing import IO
 import pytest
 from aegis_core import __main__ as entry
 from aegis_core import __version__
+from aegis_core.perception.display import DpiAwareness, current_dpi_awareness
 from aegis_core.server import handshake as handshake_module
 from aegis_core.server.auth import SessionAuth
 from aegis_core.server.handshake import LOOPBACK, Handshake, HandshakeError
@@ -239,6 +240,45 @@ def test_an_unusable_database_means_no_server(served: _Served, tmp_path: Path) -
         entry.main([], stdin=io.StringIO(f"{TOKEN}\n"), stdout=stdout)
     assert served.port is None
     assert stdout.getvalue() == ""
+
+
+# --------------------------------------------------------------------------- #
+# DPI awareness (P2-01) — first, because the first caller wins
+# --------------------------------------------------------------------------- #
+
+
+def test_dpi_awareness_is_set_before_the_token_is_even_read(
+    served: _Served, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+
+    def aware() -> DpiAwareness:
+        order.append("dpi")
+        return DpiAwareness.PER_MONITOR
+
+    monkeypatch.setattr(entry, "ensure_dpi_awareness", aware)
+
+    def token(stream: IO[str]) -> str:
+        order.append("token")
+        return handshake_module.read_token(stream)
+
+    monkeypatch.setattr(entry, "read_token", token)
+    run()
+    assert order == ["dpi", "token"]
+
+
+def test_the_core_still_starts_when_it_cannot_be_made_dpi_aware(
+    served: _Served, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Perception refuses on its own (`query_layout`); the Models screen must still open."""
+    monkeypatch.setattr(entry, "ensure_dpi_awareness", lambda: DpiAwareness.UNAWARE)
+    _, line = run()
+    assert line["port"] == served.port
+
+
+def test_the_real_core_process_ends_up_per_monitor_aware(served: _Served) -> None:
+    run()
+    assert current_dpi_awareness() is DpiAwareness.PER_MONITOR
 
 
 def test_version_flag_exits_cleanly(capsys: pytest.CaptureFixture[str]) -> None:

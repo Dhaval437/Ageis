@@ -3,6 +3,8 @@
 Runs the core's half of the `ARCHITECTURE.md § 3.1` startup handshake, then serves
 the FastAPI app on the socket it bound:
 
+0. Make the process Per-Monitor DPI aware before anything else can set it, so every
+   screen position the core ever reads is a physical pixel (`perception/display.py`).
 1. Read the 256-bit session token from the **stdin pipe** — never from argv.
    Then create or migrate `aegis.db`; a core that cannot use its database does not
    announce itself, so MAIN sees a failed start rather than a later failed task.
@@ -34,6 +36,7 @@ from aegis_core import __version__
 from aegis_core.logging_setup import configure_logging
 from aegis_core.models.service import ModelService
 from aegis_core.parent_watch import ParentWatch
+from aegis_core.perception.display import ensure_dpi_awareness
 from aegis_core.server.app import create_app
 from aegis_core.server.auth import SessionAuth
 from aegis_core.server.handshake import (
@@ -155,6 +158,11 @@ def main(
         "core.starting",
         extra={"version": __version__, "port": args.port, "log_file": str(log_file)},
     )
+
+    # First, because the process default can be set only once and the first caller wins.
+    # A core that could not be made aware still starts: `query_layout()` refuses to hand
+    # out coordinates under it, and the failure is already in the log.
+    ensure_dpi_awareness()
 
     models: ModelService | None = None
     token = read_token(stdin if stdin is not None else sys.stdin)
