@@ -1,4 +1,4 @@
-"""A plain Win32 window for the live capture tests to aim at.
+"""Plain Win32 windows for the live perception tests to aim at.
 
 Tk was the first choice and was flaky here: creating several Tk roots in one
 process intermittently failed to load `init.tcl`. A window class whose procedure
@@ -13,6 +13,7 @@ set here must not change a prototype production code relies on.
 from __future__ import annotations
 
 import ctypes
+import threading
 import time
 from ctypes import wintypes
 from typing import Final
@@ -181,3 +182,139 @@ class SolidWindow:
                 user32.TranslateMessage(ctypes.byref(message))
                 user32.DispatchMessageW(ctypes.byref(message))
             time.sleep(0.005)
+
+
+# --------------------------------------------------------------------------- #
+# A window with real controls in it, for the UI Automation tests
+# --------------------------------------------------------------------------- #
+
+WS_CHILD: Final = 0x40000000
+WS_VISIBLE: Final = 0x10000000
+WS_DISABLED: Final = 0x08000000
+ES_PASSWORD: Final = 0x0020
+ES_AUTOHSCROLL: Final = 0x0080
+COLOR_BTNFACE: Final = 15
+
+FORM_CLASS_NAME: Final = "AegisUiaTestWindow"
+_form_class_registered = False
+
+user32.SetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPCWSTR)
+user32.SetWindowTextW.restype = wintypes.BOOL
+user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+user32.GetWindowRect.restype = wintypes.BOOL
+
+
+def _register_form_class() -> None:
+    global _form_class_registered
+    if _form_class_registered:
+        return
+    wc = WNDCLASSEXW()
+    wc.cbSize = ctypes.sizeof(WNDCLASSEXW)
+    wc.lpfnWndProc = _window_proc
+    wc.hInstance = kernel32.GetModuleHandleW(None)
+    wc.hbrBackground = COLOR_BTNFACE + 1  # a system colour brush, never freed
+    wc.lpszClassName = FORM_CLASS_NAME
+    if not user32.RegisterClassExW(ctypes.byref(wc)):
+        error = ctypes.get_last_error()
+        if error != ERROR_CLASS_ALREADY_EXISTS:
+            raise ctypes.WinError(error)
+    _form_class_registered = True
+
+
+class FormWindow:
+    """A topmost, never-activated window holding a button, a text box and a password box.
+
+    It lives on its **own thread**, which pumps its messages: UI Automation calls
+    into a window's thread, so a window owned by the thread doing the walking
+    would deadlock it. `hang()` stops the pumping, which is how a hung app looks
+    from outside. Use as a context manager.
+    """
+
+    TITLE: Final = "AEGIS form test"
+    BUTTON: Final = "Save changes"
+    DISABLED_BUTTON: Final = "Unavailable"
+    TEXT: Final = "visible text"
+    #: What is typed into the password box. It must never appear in a tree.
+    SECRET: Final = "hunter2-correct-horse"  # noqa: S105 - a test fixture, not a credential
+
+    def __init__(self, rect: Rect) -> None:
+        self.rect = rect
+        self.hwnd = 0
+        self.children: dict[str, int] = {}
+        self._ready = threading.Event()
+        self._stop = threading.Event()
+        self._hung = threading.Event()
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(target=self._run, name="uia-form-window", daemon=True)
+
+    def __enter__(self) -> FormWindow:
+        self._thread.start()
+        if not self._ready.wait(5):
+            raise TimeoutError("the form window was never created")
+        if self._error is not None:
+            raise self._error
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._hung.clear()
+        self._stop.set()
+        self._thread.join(10)
+
+    def hang(self, seconds: float) -> None:
+        """Stop answering messages for `seconds`."""
+        self._hang_for = seconds
+        self._hung.set()
+
+    def child_rect(self, key: str) -> Rect:
+        rect = wintypes.RECT()
+        if not user32.GetWindowRect(self.children[key], ctypes.byref(rect)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return Rect(rect.left, rect.top, rect.right, rect.bottom)
+
+    def _create(self, parent: int, cls: str, text: str, style: int, x: int, y: int) -> int:
+        hwnd: int | None = user32.CreateWindowExW(
+            0, cls, text, WS_CHILD | WS_VISIBLE | style, x, y, 240, 40,
+            parent, None, kernel32.GetModuleHandleW(None), None,
+        )  # fmt: skip
+        if not hwnd:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return hwnd
+
+    def _run(self) -> None:
+        try:
+            _register_form_class()
+            rect = self.rect
+            hwnd: int | None = user32.CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                FORM_CLASS_NAME, self.TITLE, WS_POPUP,
+                rect.left, rect.top, rect.width, rect.height,
+                None, None, kernel32.GetModuleHandleW(None), None,
+            )  # fmt: skip
+            if not hwnd:
+                raise ctypes.WinError(ctypes.get_last_error())
+            self.hwnd = hwnd
+            self.children = {
+                "button": self._create(hwnd, "BUTTON", self.BUTTON, 0, 20, 20),
+                "disabled": self._create(hwnd, "BUTTON", self.DISABLED_BUTTON, WS_DISABLED, 20, 70),
+                "text": self._create(hwnd, "EDIT", self.TEXT, ES_AUTOHSCROLL, 20, 120),
+                "password": self._create(hwnd, "EDIT", "", ES_PASSWORD | ES_AUTOHSCROLL, 20, 170),
+            }
+            user32.SetWindowTextW(self.children["password"], self.SECRET)
+            user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+        except BaseException as error:  # handed to the thread that asked for the window
+            self._error = error
+            self._ready.set()
+            return
+        self._ready.set()
+        message = wintypes.MSG()
+        try:
+            while not self._stop.is_set():
+                if self._hung.is_set():
+                    self._hung.clear()
+                    time.sleep(self._hang_for)
+                while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, PM_REMOVE):
+                    user32.TranslateMessage(ctypes.byref(message))
+                    user32.DispatchMessageW(ctypes.byref(message))
+                time.sleep(0.005)
+        finally:
+            user32.DestroyWindow(hwnd)

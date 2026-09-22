@@ -13,6 +13,8 @@ requires-python = ">=3.11,<3.14"
 license = { text = "UNLICENSED" }
 dependencies = [
   "anyio>=4.0",      # task group behind WS /v1/stream (also starlette's runtime)
+  # UI Automation client (P2-03): COM from Python, no compiled extension.
+  "comtypes>=1.4",
   "fastapi>=0.119",
   # The model adapters' HTTP client: async streaming with built-in, size-capped SSE.
   # Runtime, not dev, since P1-02 — starlette's TestClient also uses it.
@@ -101,6 +103,12 @@ disallow_any_unimported = true
 show_error_codes = true
 pretty = true
 exclude = ['^\.venv/']
+
+# comtypes ships no type information. `perception/uia_tree.py` keeps what it gets
+# back from COM as `object` and checks every value's type before using it.
+[[tool.mypy.overrides]]
+module = ["comtypes", "comtypes.*"]
+ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
 # pytest
