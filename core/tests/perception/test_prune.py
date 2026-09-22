@@ -33,6 +33,7 @@ from aegis_core.perception.prune import (  # noqa: E402
     prune,
     visible_part,
 )
+from aegis_core.perception.redact import redact_tree  # noqa: E402
 from aegis_core.perception.uia_tree import MAX_ELEMENTS, UiaElement, UiaTree, walk  # noqa: E402
 
 from tests.perception.helpers import FormWindow  # noqa: E402
@@ -102,6 +103,7 @@ class Tree:
             truncated=truncated,
             layout=DESK,
             captured_at=0.0,
+            redacted=True,
         )
 
     def prune(self, **kwargs: object) -> PrunedTree:
@@ -165,8 +167,16 @@ def test_a_window_that_is_not_on_screen_yields_nothing() -> None:
 
 
 def test_an_empty_tree_prunes_to_nothing() -> None:
-    tree = UiaTree(hwnd=1, elements=(), truncated=False, layout=DESK, captured_at=0.0)
+    tree = UiaTree(
+        hwnd=1, elements=(), truncated=False, layout=DESK, captured_at=0.0, redacted=True
+    )
     assert prune(tree).candidates == ()
+
+
+def test_an_unredacted_tree_is_refused() -> None:
+    tree = replace(Tree().build(), redacted=False)
+    with pytest.raises(ValueError, match="redacted"):
+        prune(tree)
 
 
 # --------------------------------------------------------------------------- #
@@ -384,7 +394,7 @@ def test_nothing_omitted_is_not_truncated_unless_the_walk_was() -> None:
     t = Tree()
     t.add(t.root, "Button", "Save")
     assert not t.prune().truncated
-    assert prune(t.build(truncated=True)).truncated
+    assert prune(replace(t.build(), truncated=True)).truncated
 
 
 def test_a_candidates_parent_skips_ancestors_the_cap_cut() -> None:
@@ -506,7 +516,7 @@ def form() -> Iterator[FormWindow]:
 
 
 def test_a_live_window_prunes_to_its_controls(form: FormWindow) -> None:
-    tree = walk(form.hwnd)
+    tree, _ = redact_tree(walk(form.hwnd))
     pruned = prune(tree, goal="save changes")
     by_name = {c.element.name: c for c in pruned.candidates}
     assert pruned.candidates[0].id == 0

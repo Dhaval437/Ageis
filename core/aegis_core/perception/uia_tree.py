@@ -167,6 +167,10 @@ class UiaElement:
     automation_id: str
     class_name: str
     runtime_id: tuple[int, ...]
+    #: Set by `redact.py` when it blanked this element's content: a password or
+    #: secret-labelled field, something inside one, or text shaped like a
+    #: credential. The agent asks the human to fill such a field (invariant 7).
+    redacted: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +183,9 @@ class UiaTree:
     truncated: bool
     layout: DisplayLayout
     captured_at: float
+    #: Set only by `redact.redact_tree()`. `prune()` — the route to a model —
+    #: refuses a tree without it.
+    redacted: bool = False
 
 
 class UiaNode(Protocol):

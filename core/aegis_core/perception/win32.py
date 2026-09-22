@@ -76,6 +76,8 @@ MONITORENUMPROC: Final = ctypes.WINFUNCTYPE(
     wintypes.LPARAM,
 )
 
+WNDENUMPROC: Final = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
 # ---------------------------------------------------------------------------
 # Prototypes
 # ---------------------------------------------------------------------------
@@ -134,6 +136,9 @@ user32.IsWindowVisible.restype = wintypes.BOOL
 
 user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
 user32.GetWindowRect.restype = wintypes.BOOL
+
+user32.EnumWindows.argtypes = (WNDENUMPROC, wintypes.LPARAM)
+user32.EnumWindows.restype = wintypes.BOOL
 
 # HRESULT as a plain LONG, for the same reason as `GetDpiForMonitor`.
 dwmapi.DwmGetWindowAttribute.argtypes = (
@@ -268,3 +273,33 @@ def window_bounds(hwnd: int) -> wintypes.RECT | None:
     if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
         return rect
     return None
+
+
+def window_rect(hwnd: int) -> wintypes.RECT | None:
+    """`GetWindowRect`: the rectangle UI Automation reports for a top-level window.
+
+    It includes the invisible resize border, which is exactly why it is the one
+    to compare against a walked tree's root; `None` if the window has gone.
+    """
+    rect = wintypes.RECT()
+    if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return rect
+    return None
+
+
+def enum_windows(limit: int) -> list[int]:
+    """Every top-level window, **topmost first**, stopping once more than `limit` are seen.
+
+    `EnumWindows` walks the z-order from the top. The callback only appends, for
+    the reason `enum_display_monitors` gives.
+    """
+    handles: list[int] = []
+
+    def collect(hwnd: int, _data: int) -> bool:
+        handles.append(hwnd)
+        return len(handles) <= limit
+
+    callback = WNDENUMPROC(collect)
+    if not user32.EnumWindows(callback, 0) and len(handles) <= limit:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return handles

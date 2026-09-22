@@ -2,8 +2,9 @@
 
 `capture()` copies a rectangle of the virtual desktop into a `Frame` — the raw
 pixels plus the region they came from and the `DisplayLayout` they were measured
-under. `Frame.encode()` turns it into the `Screenshot` a model is shown: at most
-`MAX_EDGE` pixels on its long side (`ARCHITECTURE.md § 6.2`), WebP.
+under. A `Screenshot` — what a model is shown, at most `MAX_EDGE` pixels on its long
+side (`ARCHITECTURE.md § 6.2`), WebP — is made from a frame **only** through
+`perception/redact.py`, never directly.
 
 Three rules shape it:
 
@@ -24,9 +25,11 @@ Three rules shape it:
   window with nothing on screen — minimised, hidden, on another virtual desktop — is
   refused with a message that says which.
 
-Nothing here redacts. Password fields are black-boxed by `perception/redact.py`
-(`P2-05`) before a screenshot leaves the process (invariant 8), and nothing may
-send a `Screenshot` anywhere until that runs.
+Nothing here redacts, so nothing here is public that turns a frame into something
+that could leave the process. `Frame._to_image()` and `Frame._encode()` are private
+to this module and `redact.py`, which black-boxes password fields and every pixel
+no UI tree vouches for first (invariant 8). `tests/perception/test_redact.py`
+fails if anything else in the core calls them.
 """
 
 from __future__ import annotations
@@ -56,7 +59,7 @@ _screen_lock = threading.Lock()
 _screen: mss.MSS | None = None
 
 #: The long edge of any image a model is shown (`ARCHITECTURE.md § 6.2`). Also the
-#: largest `max_edge` `Frame.encode()` accepts, so no caller can ask for more.
+#: largest `max_edge` `Frame._encode()` accepts, so no caller can ask for more.
 MAX_EDGE: Final = 1280
 
 #: Lossy WebP at 80 keeps UI text legible at `MAX_EDGE` for 60-110 KiB a frame.
@@ -141,7 +144,7 @@ class Frame:
     def height(self) -> int:
         return self.region.height
 
-    def to_image(self, max_edge: int = MAX_EDGE) -> Image.Image:
+    def _to_image(self, max_edge: int = MAX_EDGE) -> Image.Image:
         """The frame as an RGB image no longer than `max_edge` on its long side.
 
         Never upscales. The resize runs on a zero-copy view that *calls* the BGRX
@@ -160,11 +163,11 @@ class Frame:
         blue, green, red, _ = view.split()
         return Image.merge("RGB", (red, green, blue))
 
-    def encode(self, *, max_edge: int = MAX_EDGE, quality: int = WEBP_QUALITY) -> Screenshot:
-        """The frame as the WebP a model is shown. See the module note on redaction."""
+    def _encode(self, *, max_edge: int = MAX_EDGE, quality: int = WEBP_QUALITY) -> Screenshot:
+        """The frame as WebP. Only `redact.py` may call this, on a frame it has redacted."""
         if not 1 <= quality <= 100:
             raise ValueError(f"WebP quality must be 1-100, not {quality}.")
-        image = self.to_image(max_edge)
+        image = self._to_image(max_edge)
         buffer = io.BytesIO()
         image.save(buffer, format="WEBP", quality=quality, method=WEBP_METHOD)
         return Screenshot(

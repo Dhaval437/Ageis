@@ -102,7 +102,7 @@ aegis/
 │  │  ├─ agent/                   # loop.py, planner.py, memory.py, context.py
 │  │  ├─ models/                  # router.py, providers/*.py, schemas.py, budget.py, service.py
 │  │  ├─ tools/                   # registry.py + one module per tool family
-│  │  ├─ perception/              # display.py (+ win32.py), screen.py, uia_tree.py, prune.py, ocr.py, grounding.py
+│  │  ├─ perception/              # display.py (+ win32.py), screen.py, uia_tree.py, redact.py, prune.py, ocr.py, grounding.py
 │  │  ├─ actuation/               # input.py (SendInput), window.py, preempt.py
 │  │  ├─ guardian/                # policy.py, rules.yaml, risk.py, approvals.py
 │  │  ├─ recovery/                # journal.py, undo.py, snapshot.py
@@ -348,7 +348,7 @@ A background thread installs `WH_MOUSE_LL` and `WH_KEYBOARD_LL` hooks. Aegis' ow
 
 ### 8.4 Sensitive-content handling
 
-- **Password-field redaction:** before any screenshot leaves the machine, the UIA tree is scanned for `IsPassword` controls and fields whose label matches a secrets regex (password, otp, cvv, pin, seed phrase, recovery key). Those regions are **black-boxed in the image bytes** and their values stripped from the tree. This happens in `perception/redact.py`, before the model call, and is covered by a test that fails the build if bypassed.
+- **Password-field redaction:** before any screenshot leaves the machine, the UIA tree is scanned for `IsPassword` controls and fields whose label matches a secrets regex (password, otp, cvv, pin, seed phrase, recovery key, …), and every name and value for credential-shaped text (API keys, private-key headers, JWTs, Luhn-valid card numbers). Those regions are **black-boxed in the image bytes** (padded, at full resolution, before the downscale) and their values stripped from the tree; the field stays in the tree flagged `redacted`, so the agent hands it to the human. **Every pixel no walked tree vouches for is black too**: outside the walked windows, under an unwalked window stacked above one, or anywhere in a window whose walk was truncated. A tree from another display layout, or a window that moved since its walk, is refused (`RedactionError`) rather than boxed in the wrong place. This happens in `perception/redact.py`; `redact(frame, trees).encode()` is the **only** way to make a `Screenshot` (`Frame._encode` is private), and `prune()` refuses a tree that has not been through `redact_tree()`. `tests/perception/test_redact.py` scans the core's source and fails the build on any other route to a frame's bytes or to a `redacted=` flag.
 - **The agent never types credentials.** If a task needs a login, the agent stops and asks the human to type it, then continues. There is no "store the user's Gmail password" feature. Ever.
 - **Clipboard reads are redacted** by the same scanner.
 - **Egress control:** an allowlist of model-provider hostnames. Any other outbound connection from the core is blocked and logged. The core has no general HTTP client available to tools except through `browser` (which is user-visible) and `net.fetch` (DANGEROUS, allowlisted domains only).

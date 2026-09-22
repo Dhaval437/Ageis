@@ -161,7 +161,7 @@ def test_a_max_edge_beyond_the_architecture_limit_is_refused(max_edge: int) -> N
     with pytest.raises(ValueError, match="max_edge"):
         fit_within(100, 100, max_edge)
     with pytest.raises(ValueError, match="max_edge"):
-        frame_of(4, 4).encode(max_edge=max_edge)
+        frame_of(4, 4)._encode(max_edge=max_edge)
 
 
 def test_fit_within_refuses_an_empty_size() -> None:
@@ -187,7 +187,7 @@ def test_an_empty_frame_is_refused() -> None:
 def test_neither_repr_contains_the_pixels() -> None:
     """The pixels are the user's screen; a logged repr must not carry them."""
     frame = frame_of(8, 8)
-    shot = frame.encode()
+    shot = frame._encode()
     assert "pixels" not in repr(frame)
     assert "bytearray" not in repr(frame)
     assert "data" not in repr(shot)
@@ -197,12 +197,12 @@ def test_neither_repr_contains_the_pixels() -> None:
 @pytest.mark.parametrize("rgb", [RED, BLUE, (0, 255, 0), (12, 34, 56)])
 def test_gdi_bgrx_comes_out_as_rgb(rgb: tuple[int, int, int]) -> None:
     """The one place a swapped channel would turn every red button blue."""
-    assert frame_of(3, 2, rgb).to_image().getpixel((1, 1)) == rgb
+    assert frame_of(3, 2, rgb)._to_image().getpixel((1, 1)) == rgb
 
 
 @pytest.mark.parametrize("rgb", [RED, BLUE])
 def test_channel_order_survives_the_downscale(rgb: tuple[int, int, int]) -> None:
-    image = frame_of(2560, 1600, rgb).to_image()
+    image = frame_of(2560, 1600, rgb)._to_image()
     assert image.size == (1280, 800)
     assert image.mode == "RGB"
     assert image.getpixel((640, 400)) == rgb
@@ -219,7 +219,7 @@ def test_the_downscale_keeps_left_left_and_top_top() -> None:
         )
         pixels += left + right
     frame = Frame(region=Rect(0, 0, width, height), layout=DESK, captured_at=0.0, pixels=pixels)
-    image = frame.to_image()
+    image = frame._to_image()
     assert image.getpixel((100, 100)) == RED
     assert image.getpixel((100, 700)) == RED
     assert image.getpixel((1200, 100)) == (0, 255, 0)
@@ -227,7 +227,7 @@ def test_the_downscale_keeps_left_left_and_top_top() -> None:
 
 
 def test_a_small_frame_is_never_upscaled() -> None:
-    assert frame_of(300, 200).to_image().size == (300, 200)
+    assert frame_of(300, 200)._to_image().size == (300, 200)
 
 
 def test_encode_produces_a_decodable_webp_that_says_where_it_came_from() -> None:
@@ -237,7 +237,7 @@ def test_encode_produces_a_decodable_webp_that_says_where_it_came_from() -> None
         captured_at=12.5,
         pixels=bgrx(2560, 1024, RED),
     )
-    shot = frame.encode()
+    shot = frame._encode()
     assert shot.media_type == "image/webp"
     assert (shot.width, shot.height) == (1280, 512)
     assert shot.region == frame.region
@@ -249,7 +249,7 @@ def test_encode_produces_a_decodable_webp_that_says_where_it_came_from() -> None
 
 
 def test_encode_honours_a_smaller_max_edge() -> None:
-    shot = frame_of(1000, 500).encode(max_edge=200)
+    shot = frame_of(1000, 500)._encode(max_edge=200)
     assert (shot.width, shot.height) == (200, 100)
     assert decode(shot).size == (200, 100)
 
@@ -257,7 +257,7 @@ def test_encode_honours_a_smaller_max_edge() -> None:
 @pytest.mark.parametrize("quality", [0, 101, -5])
 def test_an_impossible_quality_is_refused(quality: int) -> None:
     with pytest.raises(ValueError, match="quality"):
-        frame_of(4, 4).encode(quality=quality)
+        frame_of(4, 4)._encode(quality=quality)
 
 
 def test_pillow_was_built_with_webp() -> None:
@@ -531,7 +531,7 @@ def test_the_primary_monitor_is_captured_at_full_physical_resolution() -> None:
     frame = capture()
     assert frame.region == live.primary.bounds
     assert len(frame.pixels) == live.primary.bounds.width * live.primary.bounds.height * 4
-    shot = frame.encode()
+    shot = frame._encode()
     assert max(shot.width, shot.height) == min(MAX_EDGE, max(frame.width, frame.height))
     assert decode(shot).size == (shot.width, shot.height)
     assert display.current_dpi_awareness() is DpiAwareness.PER_MONITOR
@@ -539,11 +539,11 @@ def test_the_primary_monitor_is_captured_at_full_physical_resolution() -> None:
 
 def test_capture_and_encode_fit_the_budget() -> None:
     """`PROGRESS.md` P2-02: < 150 ms, measured on the whole primary monitor."""
-    capture().encode()  # first call pays for DLL loads and the DIB
+    capture()._encode()  # first call pays for DLL loads and the DIB
     timings: list[float] = []
     for _ in range(9):
         started = time.perf_counter()
-        capture().encode()
+        capture()._encode()
         timings.append((time.perf_counter() - started) * 1000)
     assert statistics.median(timings) < BUDGET_MS, timings
 
@@ -560,7 +560,7 @@ def _wait_until_on_screen(window: SolidWindow) -> None:
     centre = RegionTarget(Rect(centre_x, centre_y, centre_x + 1, centre_y + 1))
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
-        if capture(centre).to_image().getpixel((0, 0)) == SolidWindow.RGB:
+        if capture(centre)._to_image().getpixel((0, 0)) == SolidWindow.RGB:
             return
         window.pump()
     pytest.fail("the red test window never appeared on screen")
@@ -579,18 +579,18 @@ def red_window() -> Iterator[SolidWindow]:
 def test_a_live_window_is_captured_where_it_is_drawn(red_window: SolidWindow) -> None:
     frame = capture(WindowTarget(red_window.hwnd))
     assert frame.region == red_window.rect
-    image = frame.to_image()
+    image = frame._to_image()
     assert image.size == (red_window.rect.width, red_window.rect.height)
     for point in [(0, 0), (150, 100), (299, 199)]:
         assert image.getpixel(point) == RED, point
-    assert close_to(decode(frame.encode()).getpixel((150, 100)), RED)
+    assert close_to(decode(frame._encode()).getpixel((150, 100)), RED)
 
 
 def test_a_live_region_is_exactly_the_pixels_asked_for(red_window: SolidWindow) -> None:
     """A region straddling the window's left edge: the edge falls on the exact pixel."""
     rect = red_window.rect
     frame = capture(RegionTarget(Rect(rect.left - 10, rect.top, rect.left + 10, rect.top + 4)))
-    image = frame.to_image()
+    image = frame._to_image()
     assert image.getpixel((10, 1)) == RED
     assert image.getpixel((9, 1)) != RED
 

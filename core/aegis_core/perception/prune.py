@@ -138,9 +138,12 @@ def prune(tree: UiaTree, *, goal: str = "", limit: int = MAX_CANDIDATES) -> Prun
     """The at most `limit` elements of `tree` most worth showing, in document order.
 
     `goal` is the task in the user's words; an element whose name shares a word
-    with it ranks higher. Raises `ValueError` for a `limit` outside
-    `1..MAX_ELEMENTS`.
+    with it ranks higher. `tree` must have been through `redact.redact_tree()`:
+    this is the route from a walk to a model, so an unredacted tree is refused
+    with `ValueError`, as is a `limit` outside `1..MAX_ELEMENTS`.
     """
+    if not tree.redacted:
+        raise ValueError("A UI tree must be redacted before it is pruned for a model.")
     if not 1 <= limit <= MAX_ELEMENTS:
         raise ValueError(f"limit must be between 1 and {MAX_ELEMENTS}, not {limit}.")
     started = time.perf_counter()
