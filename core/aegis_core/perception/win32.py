@@ -120,6 +120,9 @@ shcore.GetDpiForMonitor.argtypes = (
 )
 shcore.GetDpiForMonitor.restype = wintypes.LONG
 
+user32.GetForegroundWindow.argtypes = ()
+user32.GetForegroundWindow.restype = wintypes.HWND
+
 user32.IsWindow.argtypes = (wintypes.HWND,)
 user32.IsWindow.restype = wintypes.BOOL
 
@@ -217,6 +220,12 @@ def virtual_screen() -> tuple[int, int, int, int]:
         int(user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)),
         int(user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)),
     )
+
+
+def foreground_window() -> int:
+    """The window receiving the user's input, or 0 when there is none (lock screen, UAC)."""
+    hwnd: int | None = user32.GetForegroundWindow()
+    return hwnd or 0
 
 
 def is_window(hwnd: int) -> bool:

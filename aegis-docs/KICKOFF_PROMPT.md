@@ -1,3 +1,5 @@
+usage
+
 # KICKOFF_PROMPT.md
 
 How to actually start the build with Claude Code.

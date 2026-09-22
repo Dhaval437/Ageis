@@ -9,7 +9,12 @@
       "Bash(./.venv/Scripts/python.exe -m pytest tests/models/test_anthropic.py -q)",
       "Bash(./.venv/Scripts/python.exe -m mypy --strict aegis_core tests)",
       "PowerShell(core\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/models/test_ollama.py -q 2>&1)",
-      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=10608 or ProcessId=18696\")"
+      "PowerShell(Get-CimInstance Win32_Process -Filter \"ProcessId=10608 or ProcessId=18696\")",
+      "Bash(timeout 120 ./.venv/Scripts/python.exe -m pytest tests/models/test_ollama.py -q)",
+      "PowerShell(pnpm test 2>&1)"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
     ]
   }
 }

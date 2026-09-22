@@ -49,3 +49,4 @@ signing/
 *.db-shm
 logs/
 shadow-store/
+.claude/settings.json
