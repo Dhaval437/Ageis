@@ -26,10 +26,12 @@ Three rules shape it:
   refused with a message that says which.
 
 Nothing here redacts, so nothing here is public that turns a frame into something
-that could leave the process. `Frame._to_image()` and `Frame._encode()` are private
-to this module and `redact.py`, which black-boxes password fields and every pixel
-no UI tree vouches for first (invariant 8). `tests/perception/test_redact.py`
-fails if anything else in the core calls them.
+that could leave the process. `Frame._to_image()`, `Frame._encode()` and
+`_encode_image()` are private to this module, to `redact.py` — which black-boxes
+password fields and every pixel no UI tree vouches for first (invariant 8) — and
+to `mark.py`, which draws its numbered overlays on a frame `redact.py` has
+already cleaned. `tests/perception/test_redact.py` fails if anything else in the
+core calls them.
 """
 
 from __future__ import annotations
@@ -165,19 +167,29 @@ class Frame:
 
     def _encode(self, *, max_edge: int = MAX_EDGE, quality: int = WEBP_QUALITY) -> Screenshot:
         """The frame as WebP. Only `redact.py` may call this, on a frame it has redacted."""
-        if not 1 <= quality <= 100:
-            raise ValueError(f"WebP quality must be 1-100, not {quality}.")
-        image = self._to_image(max_edge)
-        buffer = io.BytesIO()
-        image.save(buffer, format="WEBP", quality=quality, method=WEBP_METHOD)
-        return Screenshot(
-            data=buffer.getvalue(),
-            width=image.width,
-            height=image.height,
-            region=self.region,
-            layout_fingerprint=self.layout.fingerprint,
-            captured_at=self.captured_at,
-        )
+        return _encode_image(self._to_image(max_edge), self, quality=quality)
+
+
+def _encode_image(image: Image.Image, frame: Frame, *, quality: int = WEBP_QUALITY) -> Screenshot:
+    """`image` — already scaled from `frame` — as the WebP a model is shown.
+
+    Private to this module, `redact.py` and `mark.py`: an image only reaches here
+    after redaction has blacked out every secret and every unvouched pixel
+    (invariant 8). `mark.py` needs the split because its numbered overlays are
+    drawn at the output scale, after the downscale and before the encode.
+    """
+    if not 1 <= quality <= 100:
+        raise ValueError(f"WebP quality must be 1-100, not {quality}.")
+    buffer = io.BytesIO()
+    image.save(buffer, format="WEBP", quality=quality, method=WEBP_METHOD)
+    return Screenshot(
+        data=buffer.getvalue(),
+        width=image.width,
+        height=image.height,
+        region=frame.region,
+        layout_fingerprint=frame.layout.fingerprint,
+        captured_at=frame.captured_at,
+    )
 
 
 @dataclass(frozen=True, slots=True)

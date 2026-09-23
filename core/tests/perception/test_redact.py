@@ -498,21 +498,29 @@ def test_redacting_a_4k_frame_is_cheap() -> None:
 CORE = Path(__file__).resolve().parents[2] / "aegis_core"
 
 #: Where a frame may be converted, encoded or read raw, and a screenshot built.
+#: `mark.py` draws its numbered overlays at the output scale, so it takes the
+#: downscale and the encode as two steps — but only ever on a `Redacted`.
 ALLOWED = {
     "_encode": {"screen.py", "redact.py"},
-    "_to_image": {"screen.py"},
+    "_encode_image": {"screen.py", "mark.py"},
+    "_to_image": {"screen.py", "mark.py"},
     "pixels": {"screen.py", "redact.py"},
     "Screenshot": {"screen.py"},
     "Redacted": {"redact.py"},
     "redacted=": {"redact.py"},
 }
 
+#: Names that are a route to frame bytes when read off an object.
+ATTRIBUTES = ("_encode", "_encode_image", "_to_image", "pixels")
+#: Names that are a route to frame bytes when called outright.
+CALLS = ("Screenshot", "Redacted", "_encode_image")
+
 
 def bypasses(source: str, filename: str) -> list[str]:
     """Every use in `source` of a route from a frame to bytes that `filename` may not take."""
     found: list[str] = []
     for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Attribute) and node.attr in ("_encode", "_to_image", "pixels"):
+        if isinstance(node, ast.Attribute) and node.attr in ATTRIBUTES:
             name = node.attr
         elif isinstance(node, ast.keyword) and node.arg == "redacted":
             name = "redacted="
@@ -521,7 +529,7 @@ def bypasses(source: str, filename: str) -> list[str]:
             continue
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name | ast.Attribute):
             name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr
-            if name not in ("Screenshot", "Redacted"):
+            if name not in CALLS:
                 continue
         else:
             continue
@@ -546,6 +554,8 @@ def test_nothing_in_the_core_reaches_frame_bytes_except_through_redaction() -> N
     [
         "shot = frame._encode()",
         "image = frame._to_image()",
+        "shot = _encode_image(image, frame)",
+        "shot = screen._encode_image(image, frame)",
         "send(frame.pixels)",
         "Screenshot(data=b'', width=1, height=1, region=r, layout_fingerprint='', captured_at=0)",
         "Redacted(frame=frame, trees=(), boxes=()).encode()",
