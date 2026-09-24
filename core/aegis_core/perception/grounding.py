@@ -32,10 +32,25 @@ the agent observes again instead of clicking. The `Grounding` it returns is
 itself a snapshot: the click that uses it must still check its `layout`
 (`verify_layout()`) immediately before it fires.
 
+**Text lines** (`P2-13`). A window that draws its own content — a canvas, a
+terminal, an app with accessibility off — has text OCR read (`Redacted.text`) and
+no element to name. `text_targets(redacted)` lists the lines that may be offered
+to the model, by their index in `Redacted.text`, and `resolve_text()` grounds the
+one it picks. With no element identity to re-find, this is the coordinate path
+`ARCHITECTURE.md § 6.3` calls the last resort, so the check is the pixels
+themselves: a **fresh observation** of the window, walked, captured and put
+through `redact()` again — the only route by which OCR ever reads the screen —
+must read the **same text in the same place** (within `TEXT_PLACE_PX`). A line
+that scrolled, changed, was covered or was blacked out refuses. Windows' hit
+test must land in the window as well, since pixels can show through a window
+that does not take the click. A line redaction blanked is never offered.
+What this cannot see: an invisible element in the same window that takes
+clicks over the text without drawing anything.
+
 All coordinates are physical virtual-desktop pixels (`display.py`), so there is
 no DPI correction to make: the point is already in the space `SendInput` is
-driven in. Names are compared, never logged; the debug line carries the id,
-counts and timings.
+driven in. Names and text are compared, never logged; the debug line carries the
+id, counts and timings.
 """
 
 from __future__ import annotations
@@ -43,7 +58,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
 
@@ -55,14 +70,24 @@ from aegis_core.perception.display import (
     Rect,
     verify_layout,
 )
+from aegis_core.perception.ocr import SYSTEM_OCR, OcrEngine, OcrLine, blind_regions
 from aegis_core.perception.prune import Candidate, PrunedTree, visible_part
-from aegis_core.perception.redact import redact_tree
+from aegis_core.perception.redact import Redacted, redact, redact_tree
+from aegis_core.perception.screen import WindowTarget, capture
 from aegis_core.perception.uia_tree import UiaElement, UiaTree, hit_chain, walk
 
 log = logging.getLogger(__name__)
 
 #: The message every refusal ends with: what the agent does next.
 OBSERVE_AGAIN: Final = "Take a fresh look at the screen before choosing again."
+
+#: How far, in physical pixels, each edge of a re-read text line may be from where
+#: the screenshot showed it. Measured: the same pixels read six times gave boxes
+#: identical to the pixel; a line that scrolled has moved a whole line height.
+TEXT_PLACE_PX: Final = 2
+
+#: A text line smaller than this on either side is a speck OCR read, not a target.
+MIN_TEXT_PX: Final = 4
 
 
 class GroundingError(RuntimeError):
@@ -230,3 +255,158 @@ def _ancestor_ids(tree: UiaTree, element: UiaElement) -> set[tuple[int, ...]]:
             ids.add(above.runtime_id)
         parent = above.parent
     return ids
+
+
+# --------------------------------------------------------------------------- #
+# Text lines read by OCR
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True, slots=True)
+class TextTarget:
+    """A line of OCR text that may be offered to the model as something to click.
+
+    `id` is the line's index in `Redacted.text`. `text` is untrusted screen text,
+    already redacted, and kept out of `repr`. `hwnd` is the walked window whose
+    blind region the line was read from.
+    """
+
+    id: int
+    text: str = field(repr=False)
+    box: Rect
+    hwnd: int
+
+
+@dataclass(frozen=True, slots=True)
+class TextGrounding:
+    """Where to click to reach one line of text, verified a moment ago.
+
+    The same shape as `Grounding` where a click needs it — `point`, `box`, `hwnd`,
+    `layout` — and the click must re-check `layout` the same way.
+    """
+
+    line_id: int
+    point: Point
+    box: Rect
+    hwnd: int
+    layout: DisplayLayout
+    moved: bool
+
+
+def text_targets(redacted: Redacted) -> tuple[TextTarget, ...]:
+    """The lines of `redacted.text` a model may be offered as click targets.
+
+    Left out: a line redaction blanked, a blank or speck-sized one, and one that
+    cannot be put down to exactly one walked window's blind region — two walked
+    windows overlapping — since grounding has to know which window to re-read.
+    """
+    regions = [(tree.hwnd, blind_regions(tree)) for tree in redacted.trees]
+    targets: list[TextTarget] = []
+    for index, line in enumerate(redacted.text):
+        if not _offerable(line):
+            continue
+        owners = {hwnd for hwnd, rects in regions if any(r.contains_rect(line.bbox) for r in rects)}
+        if len(owners) == 1:
+            targets.append(TextTarget(id=index, text=line.text, box=line.bbox, hwnd=owners.pop()))
+    return tuple(targets)
+
+
+def resolve_text(
+    observed: Redacted,
+    line_id: int,
+    *,
+    offered: Collection[int] | None = None,
+    ocr: OcrEngine = SYSTEM_OCR,
+) -> TextGrounding:
+    """The verified click point of text line `line_id` of `observed`.
+
+    `line_id` is what the model answered, checked like any untrusted input;
+    `offered`, when given, is the set of line ids it was shown. The window is
+    observed again — walked, captured, redacted and read by `ocr` — and the line
+    must be read there with the same text, in the same place.
+
+    Raises `GroundingError` when the line was not offered, cannot be read again,
+    has changed or moved, or is covered by another window; `LayoutChangedError`
+    when the monitors changed; and whatever `walk()`, `capture()` or `redact()`
+    raise when the window cannot be observed.
+    """
+    started = time.perf_counter()
+    target = _text_target(observed, line_id, offered)
+    _check_window(target.hwnd)
+    tree = walk(target.hwnd)
+    if tree.layout != observed.frame.layout:
+        raise LayoutChangedError(
+            "The display layout changed since the screenshot. A fresh observation is needed."
+        )
+    fresh = redact(capture(WindowTarget(target.hwnd)), [tree], ocr=ocr)
+    if any(_overlaps(rect, target.box) for rect in fresh.unread):
+        raise GroundingError(f"Text line {line_id} could not be read again. {OBSERVE_AGAIN}")
+    matches = [
+        line
+        for line in fresh.text
+        if _offerable(line) and line.text == target.text and _near(line.bbox, target.box)
+    ]
+    if not matches:
+        raise GroundingError(
+            f"Text line {line_id} has changed or moved since the screenshot. {OBSERVE_AGAIN}"
+        )
+    if len(matches) > 1:
+        raise GroundingError(
+            f"Text line {line_id} cannot be told apart from another line. {OBSERVE_AGAIN}"
+        )
+    box = matches[0].bbox
+    point = Point(box.left + box.width // 2, box.top + box.height // 2)
+    if win32.root_window_at(point.x, point.y) != target.hwnd:
+        raise GroundingError(f"Another window is covering text line {line_id}. {OBSERVE_AGAIN}")
+    grounding = TextGrounding(
+        line_id=line_id,
+        point=point,
+        box=box,
+        hwnd=target.hwnd,
+        layout=verify_layout(tree.layout),
+        moved=box != target.box,
+    )
+    log.debug(
+        "screen.text_grounded",
+        extra={
+            "line_id": line_id,
+            "lines": len(fresh.text),
+            "ms": round((time.perf_counter() - started) * 1000, 1),
+        },
+    )
+    return grounding
+
+
+def _text_target(observed: Redacted, line_id: int, offered: Collection[int] | None) -> TextTarget:
+    """The offerable line `line_id` names, refusing anything the model was not shown."""
+    if not isinstance(line_id, int) or isinstance(line_id, bool):
+        raise GroundingError(f"A text line id is a whole number. {OBSERVE_AGAIN}")
+    if offered is not None and line_id not in offered:
+        raise GroundingError(f"Text line {line_id} is not one of the offered lines.")
+    found = next((t for t in text_targets(observed) if t.id == line_id), None)
+    if found is None:
+        raise GroundingError(f"Text line {line_id} is not one of the offered lines.")
+    return found
+
+
+def _offerable(line: OcrLine) -> bool:
+    box = line.bbox
+    return (
+        not line.redacted
+        and bool(line.text.strip())
+        and box.width >= MIN_TEXT_PX
+        and box.height >= MIN_TEXT_PX
+    )
+
+
+def _near(a: Rect, b: Rect) -> bool:
+    return (
+        abs(a.left - b.left) <= TEXT_PLACE_PX
+        and abs(a.top - b.top) <= TEXT_PLACE_PX
+        and abs(a.right - b.right) <= TEXT_PLACE_PX
+        and abs(a.bottom - b.bottom) <= TEXT_PLACE_PX
+    )
+
+
+def _overlaps(a: Rect, b: Rect) -> bool:
+    return a.left < b.right and b.left < a.right and a.top < b.bottom and b.top < a.bottom

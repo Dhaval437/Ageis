@@ -417,6 +417,8 @@ user32.DrawTextW.argtypes = (
     wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int, ctypes.POINTER(wintypes.RECT), wintypes.UINT
 )  # fmt: skip
 user32.DrawTextW.restype = ctypes.c_int
+user32.InvalidateRect.argtypes = (wintypes.HWND, ctypes.c_void_p, wintypes.BOOL)
+user32.InvalidateRect.restype = wintypes.BOOL
 gdi32.CreateFontW.argtypes = (
     ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
     wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
@@ -512,6 +514,14 @@ class CanvasWindow:
     def __exit__(self, *_exc: object) -> None:
         self._stop.set()
         self._thread.join(10)
+
+    def set_lines(self, lines: tuple[str, ...]) -> None:
+        """Paint `lines` instead, as an app redrawing its own content would."""
+        self.lines = lines
+        _canvas_lines[self.hwnd] = lines
+        if not user32.InvalidateRect(self.hwnd, None, True):
+            raise ctypes.WinError(ctypes.get_last_error())
+        time.sleep(0.2)  # let it paint
 
     def line_rect(self, index: int) -> Rect:
         """The band line `index` is drawn in, in physical pixels."""
