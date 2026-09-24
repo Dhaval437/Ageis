@@ -500,10 +500,12 @@ CORE = Path(__file__).resolve().parents[2] / "aegis_core"
 #: Where a frame may be converted, encoded or read raw, and a screenshot built.
 #: `mark.py` draws its numbered overlays at the output scale, so it takes the
 #: downscale and the encode as two steps — but only ever on a `Redacted`.
+#: `phash.py` shrinks a `Redacted`'s frame to a 17x16 grey grid and keeps 256
+#: bits of it; nothing it produces is an image.
 ALLOWED = {
     "_encode": {"screen.py", "redact.py"},
     "_encode_image": {"screen.py", "mark.py"},
-    "_to_image": {"screen.py", "mark.py"},
+    "_to_image": {"screen.py", "mark.py", "phash.py"},
     "pixels": {"screen.py", "redact.py"},
     "Screenshot": {"screen.py"},
     "Redacted": {"redact.py"},
