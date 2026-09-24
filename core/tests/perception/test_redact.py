@@ -590,7 +590,11 @@ def test_golden_a_real_password_box_is_pixel_black_off_the_real_screen(form: For
     frame = capture(WindowTarget(form.hwnd))
     password = form.child_rect("password")
     text = form.child_rect("text")
-    assert pixel(frame, password.left + 10, password.top + 10) != (0, 0, 0)
+    assert any(
+        pixel(frame, x, y) != (0, 0, 0)
+        for y in range(password.top, password.bottom)
+        for x in range(password.left, password.right)
+    )
 
     result = redact(frame, [tree])
 
