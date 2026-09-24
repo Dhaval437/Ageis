@@ -379,3 +379,172 @@ class FormWindow:
                 time.sleep(0.005)
         finally:
             user32.DestroyWindow(hwnd)
+
+
+# --------------------------------------------------------------------------- #
+# A window that draws text UI Automation knows nothing about, for the OCR tests
+# --------------------------------------------------------------------------- #
+
+WM_PAINT: Final = 0x000F
+COLOR_WINDOW: Final = 5
+FW_NORMAL: Final = 400
+DEFAULT_CHARSET: Final = 1
+ANTIALIASED_QUALITY: Final = 4
+TRANSPARENT: Final = 1
+DT_LEFT: Final = 0x0000
+DT_SINGLELINE: Final = 0x0020
+DT_NOPREFIX: Final = 0x0800
+
+CANVAS_CLASS_NAME: Final = "AegisOcrTestWindow"
+
+
+class PAINTSTRUCT(ctypes.Structure):
+    _fields_ = (
+        ("hdc", wintypes.HDC),
+        ("fErase", wintypes.BOOL),
+        ("rcPaint", wintypes.RECT),
+        ("fRestore", wintypes.BOOL),
+        ("fIncUpdate", wintypes.BOOL),
+        ("rgbReserved", ctypes.c_byte * 32),
+    )
+
+
+user32.BeginPaint.argtypes = (wintypes.HWND, ctypes.POINTER(PAINTSTRUCT))
+user32.BeginPaint.restype = wintypes.HDC
+user32.EndPaint.argtypes = (wintypes.HWND, ctypes.POINTER(PAINTSTRUCT))
+user32.EndPaint.restype = wintypes.BOOL
+user32.DrawTextW.argtypes = (
+    wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int, ctypes.POINTER(wintypes.RECT), wintypes.UINT
+)  # fmt: skip
+user32.DrawTextW.restype = ctypes.c_int
+gdi32.CreateFontW.argtypes = (
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+    wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+    wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.LPCWSTR,
+)  # fmt: skip
+gdi32.CreateFontW.restype = wintypes.HFONT
+gdi32.SelectObject.argtypes = (wintypes.HDC, wintypes.HGDIOBJ)
+gdi32.SelectObject.restype = wintypes.HGDIOBJ
+gdi32.DeleteObject.argtypes = (wintypes.HGDIOBJ,)
+gdi32.DeleteObject.restype = wintypes.BOOL
+gdi32.SetBkMode.argtypes = (wintypes.HDC, ctypes.c_int)
+gdi32.SetBkMode.restype = ctypes.c_int
+
+#: What each live canvas draws, by window handle. Read on the window's own thread.
+_canvas_lines: dict[int, tuple[str, ...]] = {}
+_canvas_class_registered = False
+
+
+def _paint(hwnd: int, message: int, wparam: int, lparam: int) -> int:
+    if message != WM_PAINT or hwnd not in _canvas_lines:
+        return int(user32.DefWindowProcW(hwnd, message, wparam, lparam))
+    paint = PAINTSTRUCT()
+    hdc = user32.BeginPaint(hwnd, ctypes.byref(paint))
+    font = gdi32.CreateFontW(
+        -CanvasWindow.TEXT_PX, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+        0, 0, ANTIALIASED_QUALITY, 0, "Segoe UI",
+    )  # fmt: skip
+    previous = gdi32.SelectObject(hdc, font)
+    gdi32.SetBkMode(hdc, TRANSPARENT)
+    for index, line in enumerate(_canvas_lines[hwnd]):
+        top = CanvasWindow.MARGIN_PX + index * CanvasWindow.LINE_PX
+        rect = wintypes.RECT(CanvasWindow.MARGIN_PX, top, 4000, top + CanvasWindow.LINE_PX)
+        user32.DrawTextW(hdc, line, -1, ctypes.byref(rect), DT_LEFT | DT_SINGLELINE | DT_NOPREFIX)
+    gdi32.SelectObject(hdc, previous)
+    gdi32.DeleteObject(font)
+    user32.EndPaint(hwnd, ctypes.byref(paint))
+    return 0
+
+
+#: Kept alive for the process: the class holds a pointer to it.
+_paint_proc = WNDPROC(_paint)
+
+
+def _register_canvas_class() -> None:
+    global _canvas_class_registered
+    if _canvas_class_registered:
+        return
+    wc = WNDCLASSEXW()
+    wc.cbSize = ctypes.sizeof(WNDCLASSEXW)
+    wc.lpfnWndProc = _paint_proc
+    wc.hInstance = kernel32.GetModuleHandleW(None)
+    wc.hbrBackground = COLOR_WINDOW + 1  # a system colour brush, never freed
+    wc.lpszClassName = CANVAS_CLASS_NAME
+    if not user32.RegisterClassExW(ctypes.byref(wc)):
+        error = ctypes.get_last_error()
+        if error != ERROR_CLASS_ALREADY_EXISTS:
+            raise ctypes.WinError(error)
+    _canvas_class_registered = True
+
+
+class CanvasWindow:
+    """A topmost, never-activated window that paints lines of text itself.
+
+    Nothing in it is a control, so UI Automation sees one empty pane: the case a
+    canvas, a game or an app with accessibility off presents. Owned by its own
+    thread, like `FormWindow`. Use as a context manager.
+    """
+
+    TITLE: Final = "AEGIS canvas test"
+    #: Physical pixels. Large enough for OCR to read at any scaling.
+    TEXT_PX: Final = 40
+    LINE_PX: Final = 64
+    MARGIN_PX: Final = 24
+
+    def __init__(self, rect: Rect, lines: tuple[str, ...]) -> None:
+        self.rect = rect
+        self.lines = lines
+        self.hwnd = 0
+        self._ready = threading.Event()
+        self._stop = threading.Event()
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(target=self._run, name="ocr-canvas-window", daemon=True)
+
+    def __enter__(self) -> CanvasWindow:
+        self._thread.start()
+        if not self._ready.wait(5):
+            raise TimeoutError("the canvas window was never created")
+        if self._error is not None:
+            raise self._error
+        time.sleep(0.2)  # let it paint
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._stop.set()
+        self._thread.join(10)
+
+    def line_rect(self, index: int) -> Rect:
+        """The band line `index` is drawn in, in physical pixels."""
+        top = self.rect.top + self.MARGIN_PX + index * self.LINE_PX
+        return Rect(self.rect.left, top, self.rect.right, top + self.LINE_PX)
+
+    def _run(self) -> None:
+        try:
+            _register_canvas_class()
+            rect = self.rect
+            hwnd: int | None = user32.CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                CANVAS_CLASS_NAME, self.TITLE, WS_POPUP,
+                rect.left, rect.top, rect.width, rect.height,
+                None, None, kernel32.GetModuleHandleW(None), None,
+            )  # fmt: skip
+            if not hwnd:
+                raise ctypes.WinError(ctypes.get_last_error())
+            self.hwnd = hwnd
+            _canvas_lines[hwnd] = self.lines
+            user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+        except BaseException as error:  # handed to the thread that asked for the window
+            self._error = error
+            self._ready.set()
+            return
+        self._ready.set()
+        message = wintypes.MSG()
+        try:
+            while not self._stop.is_set():
+                while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, PM_REMOVE):
+                    user32.TranslateMessage(ctypes.byref(message))
+                    user32.DispatchMessageW(ctypes.byref(message))
+                time.sleep(0.005)
+        finally:
+            _canvas_lines.pop(hwnd, None)
+            user32.DestroyWindow(hwnd)

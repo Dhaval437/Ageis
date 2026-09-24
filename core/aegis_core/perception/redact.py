@@ -27,13 +27,25 @@ field it missed may be the password. The model can only act on what is in a
 tree anyway; showing it pixels it cannot address buys nothing and risks the one
 thing this module exists to stop.
 
+What no tree describes: a window that draws its own content — a canvas, a
+terminal buffer, an Electron page with accessibility off — shows text its tree
+does not have, so none of the rules above can see it. `ocr.blind_regions()`
+finds those parts of each walked window, and they are **read or blacked out,
+never sent unread**: after the tree-based painting, OCR reads each one off the
+already-painted frame (so it cannot read a secret field or another window), and
+every line goes through the same rules — credential-shaped text, and a line
+carrying a secret label, is replaced in the text and blacked out in the pixels.
+A region OCR cannot read — no engine, no OCR language installed, a failure or a
+timeout, or a caller passing `ocr=None` — is painted black and listed in
+`Redacted.unread`. OCR's own misreads are the residual risk there: a key it
+splits with a space no longer matches its pattern.
+
 When redaction refuses: a tree measured under a different display layout than
 the frame, or a window that has moved since it was walked, would put every
 black box in the wrong place. Both raise `RedactionError`; the caller observes
 again. What this cannot see is a field that scrolled *inside* a window that did
 not move, in the ~100 ms between walk and capture; boxes are padded, and that is
-the residual risk. Text drawn with no tree behind it — a canvas, a terminal
-buffer — is `P2-07`'s OCR to find.
+the residual risk.
 
 Nothing here logs screen text: only counts.
 """
@@ -49,6 +61,16 @@ from typing import Final
 
 from aegis_core.perception import win32
 from aegis_core.perception.display import Rect
+from aegis_core.perception.ocr import (
+    MAX_LINES,
+    SYSTEM_OCR,
+    OcrEngine,
+    OcrError,
+    OcrLine,
+    blind_regions,
+    read_region,
+    shorten,
+)
 from aegis_core.perception.screen import (
     BYTES_PER_PIXEL,
     MAX_EDGE,
@@ -135,6 +157,12 @@ class Redacted:
     trees: tuple[UiaTree, ...]
     #: Physical rectangles painted black, clipped to the frame.
     boxes: tuple[Rect, ...] = field(repr=False)
+    #: Text OCR read in the parts of the windows their trees do not describe,
+    #: after redaction, top to bottom within each region.
+    text: tuple[OcrLine, ...] = field(default=(), repr=False)
+    #: Parts of the windows no tree describes that could not be read, and so were
+    #: painted black. The model is shown nothing there.
+    unread: tuple[Rect, ...] = ()
 
     def encode(self, *, max_edge: int = MAX_EDGE, quality: int = WEBP_QUALITY) -> Screenshot:
         """The redacted frame as the WebP a model is shown."""
@@ -146,14 +174,17 @@ def redact(
     trees: Sequence[UiaTree],
     *,
     stacking: Sequence[OnScreenWindow] | None = None,
+    ocr: OcrEngine | None = SYSTEM_OCR,
 ) -> Redacted:
     """`frame` and `trees` with every secret removed, and every unvouched pixel black.
 
     `trees` are the windows walked for this observation, usually just the
     foreground one. `stacking` is the visible top-level windows, topmost first;
     by default it is read from Windows now, which is what makes a window that
-    has moved since its walk detectable. Raises `RedactionError` if a tree does
-    not match the frame's layout or its window's current position.
+    has moved since its walk detectable. `ocr` reads the parts of those windows
+    their trees do not describe; `None` paints them black instead. Raises
+    `RedactionError` if a tree does not match the frame's layout or its window's
+    current position.
     """
     started = time.perf_counter()
     for tree in trees:
@@ -170,12 +201,24 @@ def redact(
         boxes.extend(_pad(rect) for rect in secret)
     boxes.extend(_unvouched(frame.region, trees, windows))
     painted = [clip for rect in boxes if (clip := _intersect(rect, frame.region)) is not None]
-    result = Redacted(frame=_painted(frame, painted), trees=tuple(cleaned), boxes=tuple(painted))
+    first = _painted(frame, painted)
+    text, secret_lines, unread = _read_blind(first, cleaned, ocr)
+    more = [clip for rect in secret_lines if (clip := _intersect(rect, frame.region)) is not None]
+    more.extend(unread)
+    result = Redacted(
+        frame=_painted(first, more),
+        trees=tuple(cleaned),
+        boxes=tuple(painted + more),
+        text=text,
+        unread=tuple(unread),
+    )
     log.debug(
         "screen.redacted",
         extra={
             "trees": len(trees),
-            "boxes": len(painted),
+            "boxes": len(painted) + len(more),
+            "ocr_lines": len(text),
+            "unread": len(unread),
             "ms": round((time.perf_counter() - started) * 1000, 1),
         },
     )
@@ -235,6 +278,60 @@ def redact_tree(tree: UiaTree) -> tuple[UiaTree, list[Rect]]:
             boxes.append(e.bbox)
         out.append(cleaned)
     return replace(tree, elements=tuple(out), redacted=True), boxes
+
+
+# --------------------------------------------------------------------------- #
+# What no tree describes
+# --------------------------------------------------------------------------- #
+
+
+def _read_blind(
+    frame: Frame, trees: Sequence[UiaTree], engine: OcrEngine | None
+) -> tuple[tuple[OcrLine, ...], list[Rect], list[Rect]]:
+    """The redacted OCR text of every blind region of `trees`, the padded boxes of
+    the lines that carried a secret, and the regions that could not be read.
+
+    `frame` is already painted, so OCR never sees a secret field or a pixel no
+    tree vouches for. Every line is scanned before the cap drops any.
+    """
+    lines: list[OcrLine] = []
+    secret: list[Rect] = []
+    unread: list[Rect] = []
+    for tree in trees:
+        for region in blind_regions(tree):
+            clip = _intersect(region, frame.region)
+            if clip is None:
+                continue
+            if engine is None:
+                unread.append(clip)
+                continue
+            try:
+                found = read_region(engine, _crop(frame, clip), clip)
+            except OcrError as error:
+                log.warning("screen.ocr_unread", extra={"reason": type(error).__name__})
+                unread.append(clip)
+                continue
+            for line in found:
+                cleaned = _redact_line(line)
+                if cleaned.redacted:
+                    secret.append(_pad(line.bbox))
+                lines.append(cleaned)
+    return tuple(lines[:MAX_LINES]), secret, unread
+
+
+def _redact_line(line: OcrLine) -> OcrLine:
+    """`line` with any secret removed and flagged, its text cut to length.
+
+    A line with a secret label loses all of its text: the value may be anywhere
+    in it. A line with only a credential in it keeps the words round it. The
+    scan runs on the whole line, before it is cut.
+    """
+    if is_secret_label(line.text):
+        return replace(line, text=REDACTED, redacted=True)
+    text = redact_text(line.text)
+    if text != line.text:
+        return replace(line, text=shorten(text), redacted=True)
+    return replace(line, text=shorten(text))
 
 
 # --------------------------------------------------------------------------- #
@@ -312,6 +409,15 @@ def _painted(frame: Frame, rects: Sequence[Rect]) -> Frame:
     return Frame(
         region=frame.region, layout=frame.layout, captured_at=frame.captured_at, pixels=pixels
     )
+
+
+def _crop(frame: Frame, rect: Rect) -> bytes:
+    """The top-down BGRX bytes of `rect`, which must lie inside `frame`."""
+    stride = frame.width * BYTES_PER_PIXEL
+    start = (rect.left - frame.region.left) * BYTES_PER_PIXEL
+    span = rect.width * BYTES_PER_PIXEL
+    rows = range(rect.top - frame.region.top, rect.bottom - frame.region.top)
+    return b"".join(frame.pixels[y * stride + start : y * stride + start + span] for y in rows)
 
 
 # --------------------------------------------------------------------------- #
