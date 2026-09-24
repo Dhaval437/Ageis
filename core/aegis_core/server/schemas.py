@@ -34,6 +34,24 @@ class HealthResponse(BaseModel):
     uptime: float = Field(ge=0, description="Seconds since the app was created.")
 
 
+class KillResponse(BaseModel):
+    """`POST /v1/kill` — the core's acknowledgement of the kill switch (`P3-06`).
+
+    MAIN reads a `200` inside its deadline as "input has stopped"; anything else, or
+    nothing, and it terminates the core. Counts only: nothing a key name could be in.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    engaged: Literal[True] = Field(description="Always `true`; the switch stays engaged.")
+    released_keys: int = Field(ge=0, description="Keys released across every controller.")
+    released_buttons: int = Field(ge=0, description="Mouse buttons released.")
+    release_failures: int = Field(
+        ge=0,
+        description="Controllers whose release raised. Non-zero means a key may still be held.",
+    )
+
+
 RiskTier = Literal["SAFE", "CAUTION", "DANGEROUS", "FORBIDDEN"]
 """Risk tiers every tool call is classified into. See `REMEMBER.md § 6`."""
 

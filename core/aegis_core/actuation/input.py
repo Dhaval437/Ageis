@@ -30,6 +30,7 @@ from enum import StrEnum
 from typing import Final, Protocol
 
 from aegis_core.actuation import win32
+from aegis_core.actuation.killswitch import KillSwitch
 from aegis_core.actuation.preempt import PreemptSignal
 from aegis_core.actuation.signature import AEGIS_SIGNATURE
 
@@ -161,9 +162,7 @@ class SendInputBackend:
         # KEYEVENTF_UNICODE carries one UTF-16 code unit per event, so anything
         # above the BMP is sent as its two surrogates, in one batch.
         encoded = char.encode("utf-16-le")
-        units = [
-            encoded[i] | (encoded[i + 1] << 8) for i in range(0, len(encoded), 2)
-        ]
+        units = [encoded[i] | (encoded[i + 1] << 8) for i in range(0, len(encoded), 2)]
         events = [
             self._key_event(
                 vk=0,
@@ -220,6 +219,7 @@ class InputController:
         backend: InputBackend,
         preempt: PreemptSignal | None = None,
         *,
+        kill: KillSwitch | None = None,
         inter_event_delay: float = 0.002,
     ) -> None:
         if inter_event_delay < 0:
@@ -230,6 +230,9 @@ class InputController:
         self._lock = threading.RLock()
         self._held_keys: list[int] = []
         self._held_buttons: list[MouseButton] = []
+        self._kill = kill
+        if kill is not None:
+            kill.attach(self)
 
     # -- state --------------------------------------------------------------
 
@@ -250,8 +253,13 @@ class InputController:
     # -- abort plumbing -----------------------------------------------------
 
     def _checkpoint(self) -> None:
-        """Raise if the human took over. Called before and between every event."""
+        """Raise if the human took over or the kill switch fired.
+
+        Called before and between every event.
+        """
         if self._preempt is not None and self._preempt.is_set():
+            raise InputAbortedError()
+        if self._kill is not None and self._kill.engaged:
             raise InputAbortedError()
 
     def _pace(self) -> None:
@@ -275,6 +283,11 @@ class InputController:
             # earlier call must still be released before we unwind.
             self._checkpoint()
             yield
+            # The kill switch sweeps from another thread, so an event sent in
+            # the gap between its sweep and this sequence's next checkpoint
+            # would otherwise outlive it — `key_down()` has no next checkpoint.
+            if self._kill is not None and self._kill.engaged:
+                raise InputAbortedError()
         except BaseException as exc:
             released, buttons = self._release_all_unchecked()
             if isinstance(exc, InputAbortedError):

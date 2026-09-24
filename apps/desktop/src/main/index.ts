@@ -7,16 +7,25 @@
  *
  * Landed so far: window, frameless shell for the custom titlebar, tray, the
  * single-instance lock (P0-02), the preload bridge (P0-04), the core
- * supervisor (P0-07) and the event stream forwarded to the renderer (P0-09). The real kill switch is P3-06 — the bridge namespaces it
- * backs are registered and answer `unavailable` until then.
+ * supervisor (P0-07), the event stream forwarded to the renderer (P0-09) and
+ * the kill switch (P3-06).
  */
 
-import { app } from 'electron';
+import { app, globalShortcut } from 'electron';
 import type { BrowserWindow } from 'electron';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createMainWindow } from './window.js';
 import { createTray, type TrayHandle } from './tray.js';
 import type { TrayMenuState } from './tray-menu.js';
+import {
+  DEFAULT_KILL_SWITCH,
+  createFileHotkeyStore,
+  createHotkeyService,
+  type KillSwitchHotkeys,
+} from './hotkeys.js';
+import { createKillSwitch, type KillReport, type KillSwitch } from './kill-switch.js';
+import { hotkeysFile } from './paths.js';
 import { registerBridgeIpc, type BridgeIpc } from './ipc.js';
 import { createCoreStream, type CoreAvailability, type CoreStream } from './core-stream.js';
 import {
@@ -34,7 +43,13 @@ let tray: TrayHandle | null = null;
 let bridge: BridgeIpc | null = null;
 let supervisor: Supervisor | null = null;
 let coreStream: CoreStream | null = null;
-let trayState: TrayMenuState = { windowVisible: false, taskRunning: false };
+let killSwitch: KillSwitch | null = null;
+let hotkeys: KillSwitchHotkeys | null = null;
+let trayState: TrayMenuState = {
+  windowVisible: false,
+  taskRunning: false,
+  killSwitch: DEFAULT_KILL_SWITCH,
+};
 
 function setTrayState(patch: Partial<TrayMenuState>): void {
   trayState = { ...trayState, ...patch };
@@ -115,6 +130,14 @@ function bootstrap(): void {
     app.quit();
   });
 
+  app.on('will-quit', () => {
+    // Electron's own rule: global shortcuts are released before the app exits,
+    // or Windows keeps the combination reserved for a process that is gone.
+    hotkeys?.dispose();
+    hotkeys = null;
+    globalShortcut.unregisterAll();
+  });
+
   app.on('before-quit', () => {
     tray?.destroy();
     tray = null;
@@ -142,11 +165,31 @@ function bootstrap(): void {
       });
       supervisor = createCoreSupervisor();
 
+      // Invariant 2: armed before the window exists and before the core has
+      // answered, so the stop works from the first frame — including while the
+      // core is still starting, or never starts at all.
+      killSwitch = createKillSwitch({
+        gateway: () => supervisor?.gateway() ?? null,
+        terminate: () => supervisor?.terminate() ?? Promise.resolve(false),
+        onReport: logKillReport,
+      });
+      hotkeys = createHotkeyService({
+        registry: globalShortcut,
+        store: createFileHotkeyStore(hotkeysFile(process.env, homedir())),
+        onKillSwitch: () => {
+          void killSwitch?.trigger();
+        },
+        onChange: (map) => {
+          setTrayState({ killSwitch: map.killSwitch });
+        },
+      });
+      hotkeys.arm();
+
       bridge = registerBridgeIpc({
         getWindow: () => mainWindow,
-        // The OverlayHUD window is P3-13; hotkeys are P3-06 and updates are
-        // P7-04. Until each lands its namespace answers `unavailable` rather
-        // than silently doing nothing.
+        // The OverlayHUD window is P3-13 and updates are P7-04. Until each
+        // lands its namespace answers `unavailable` rather than silently doing
+        // nothing.
         setOverlay: null,
         rest: {
           // Null while the core is down, which is how the renderer learns to
@@ -167,7 +210,7 @@ function bootstrap(): void {
                     }
                   },
                 },
-          hotkeys: () => null,
+          hotkeys: () => hotkeys,
           updates: () => null,
         },
         engineState: () => {
@@ -187,8 +230,7 @@ function bootstrap(): void {
       tray = createTray(trayState, {
         toggleWindow: toggleMainWindow,
         stopAgent: () => {
-          // Unreachable until P3-06: the item is disabled while no task runs.
-          console.warn('[main] stop requested, but the kill switch lands in P3-06');
+          void killSwitch?.trigger();
         },
         quit: () => {
           app.quit();
@@ -223,6 +265,20 @@ function createCoreSupervisor(): Supervisor {
       coreStream?.setSession(session);
     },
   });
+}
+
+/**
+ * One line per press, and never anything from the core's body beyond a count.
+ * The renderer's "Stopped by you" is P3-14's; this is for the log a user sends.
+ */
+function logKillReport(report: KillReport): void {
+  const elapsed = report.elapsedMs.toFixed(1);
+  console.warn(`[main] kill switch: ${report.outcome} in ${elapsed} ms`);
+  if (report.releaseFailures > 0) {
+    console.error(
+      `[main] kill switch: the core could not release ${String(report.releaseFailures)} controller(s); a key may be held`,
+    );
+  }
 }
 
 function availabilityOf(state: SupervisorState): CoreAvailability {

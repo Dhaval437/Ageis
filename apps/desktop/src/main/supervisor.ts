@@ -91,6 +91,8 @@ export interface SupervisorOptions {
   readonly restartDelayMs?: number;
   readonly healthTimeoutMs?: number;
   readonly now?: () => number;
+  /** Injected in tests; defaults to `TerminateProcess` via `process.kill`. */
+  readonly terminatePid?: (pid: number) => void;
 }
 
 export interface Supervisor {
@@ -109,6 +111,16 @@ export interface Supervisor {
   readonly state: () => SupervisorState;
   /** Kills the core and stops restarting it. Safe to call more than once. */
   readonly stop: () => Promise<void>;
+  /**
+   * The kill switch's last resort (`P3-06`): terminate the core **now** — no
+   * polite signal, no grace period — then start a fresh one with a clean
+   * attempt budget. Resolves `true` if there was a running core to terminate.
+   *
+   * It terminates the process that answered the handshake as well as the
+   * child MAIN spawned, because in development those differ: the venv's
+   * `python.exe` re-execs, so the core holding the mouse is a *grandchild*.
+   */
+  readonly terminate: () => Promise<boolean>;
 }
 
 /**
@@ -172,6 +184,15 @@ async function killChild(child: ChildProcessWithoutNullStreams, graceMs: number)
   });
 }
 
+/** `TerminateProcess`. A process that is already gone is the outcome we wanted. */
+function terminateProcess(pid: number): void {
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // ESRCH: it died first.
+  }
+}
+
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : 'The core failed to start.';
 }
@@ -184,10 +205,13 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
   const restartDelayMs = options.restartDelayMs ?? RESTART_DELAY_MS;
   const healthTimeoutMs = options.healthTimeoutMs ?? HEALTH_TIMEOUT_MS;
   const now = options.now ?? Date.now;
+  const terminatePid = options.terminatePid ?? terminateProcess;
 
   let state: SupervisorState = { status: 'stopped', attempts: 0, lastError: null };
   let child: ChildProcessWithoutNullStreams | null = null;
   let gateway: CoreGateway | null = null;
+  /** The PID the core reported in its handshake — the process that holds the mouse. */
+  let corePid: number | null = null;
   let restartTimer: NodeJS.Timeout | null = null;
   /** Set by `stop()`, so an in-flight attempt cannot resurrect a stopped core. */
   let stopped = false;
@@ -230,6 +254,7 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
     if (exited !== child) return;
     child = null;
     gateway = null;
+    corePid = null;
     options.onSession?.(null);
     if (stopped) return;
     setState({ lastError: 'The core stopped unexpectedly.' });
@@ -257,6 +282,7 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
     }
     child = started.child;
     gateway = candidate;
+    corePid = started.session.pid;
     started.child.once('exit', () => {
       onCoreExit(started.child);
     });
@@ -304,6 +330,7 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
     const running = child;
     child = null;
     gateway = null;
+    corePid = null;
     if (running !== null) options.onSession?.(null);
     setState({ status: 'stopped' });
     if (running !== null) await killChild(running, KILL_GRACE_MS);
@@ -330,7 +357,33 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
     });
   }
 
+  function terminate(): Promise<boolean> {
+    const running = child;
+    const pid = corePid;
+    if (running === null) return Promise.resolve(false);
+    // Forget it first, so its exit is not mistaken for a crash to count.
+    child = null;
+    gateway = null;
+    corePid = null;
+    options.onSession?.(null);
+    // Only while `child` was still ours: a PID MAIN has seen exit may already
+    // belong to somebody else's program.
+    if (pid !== null) terminatePid(pid);
+    if (running.pid !== undefined && running.pid !== pid) terminatePid(running.pid);
+    // Belt and braces for the launcher; `TerminateProcess` again is harmless.
+    running.kill('SIGKILL');
+    setState({ lastError: 'The kill switch stopped the engine.' });
+    // A person asked, as with `restart()`: a fresh core with no task in it is
+    // what the stop leaves behind, and it must not be refused for a crash budget
+    // the person did not spend.
+    attemptTimes = [];
+    setState({ attempts: 0 });
+    scheduleRestart();
+    return Promise.resolve(true);
+  }
+
   return {
+    terminate,
     start: (): Promise<SupervisorState> => {
       stopped = false;
       return attemptLoop();

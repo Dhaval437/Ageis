@@ -22,3 +22,12 @@ function dataRoot(env: NodeJS.ProcessEnv, homeDir: string): string {
 export function aegisLogDir(env: NodeJS.ProcessEnv, homeDir: string): string {
   return join(dataRoot(env, homeDir), 'logs');
 }
+
+/**
+ * `%LOCALAPPDATA%\Aegis\hotkeys.json` — the kill-switch binding (`P3-06`). MAIN's
+ * own file, not a core setting: the shortcut has to arm when the core is hung or
+ * has never started.
+ */
+export function hotkeysFile(env: NodeJS.ProcessEnv, homeDir: string): string {
+  return join(dataRoot(env, homeDir), 'hotkeys.json');
+}

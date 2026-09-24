@@ -443,4 +443,90 @@ describe('createSupervisor', () => {
     expect(state.status).toBe('running');
     await supervisor.stop();
   });
+  describe('terminate (the kill switch, P3-06)', () => {
+    /** The development shape: MAIN's child is a launcher, the core its child. */
+    class LauncherCore extends FakeCore {
+      constructor(readonly pid: number) {
+        super();
+      }
+    }
+
+    function build(make: (index: number) => FakeCore) {
+      const terminated: number[] = [];
+      const harness = spawner(make);
+      const sessions: (number | null)[] = [];
+      const supervisor = createSupervisor({
+        spec: SPEC,
+        startCoreFn: harness.startCoreFn,
+        createGatewayFn: () => healthyGateway(),
+        restartDelayMs: 1,
+        terminatePid: (pid) => terminated.push(pid),
+        onSession: (session) => sessions.push(session?.port ?? null),
+      });
+      return { supervisor, terminated, sessions, ...harness };
+    }
+
+    it('terminates the handshake PID and the launcher at once, with no polite signal', async () => {
+      const { supervisor, terminated, cores } = build(() => new LauncherCore(7000));
+      await supervisor.start();
+
+      expect(await supervisor.terminate()).toBe(true);
+
+      // 4001 is the core that answered the handshake; 7000 the child MAIN spawned.
+      expect(terminated).toEqual([4001, 7000]);
+      expect(cores[0]?.kills).toEqual(['SIGKILL']);
+      expect(supervisor.gateway()).toBeNull();
+      await supervisor.stop();
+    });
+
+    it('terminates once when the child is the core, as when packaged', async () => {
+      const { supervisor, terminated } = build(() => new LauncherCore(4001));
+      await supervisor.start();
+      await supervisor.terminate();
+      expect(terminated).toEqual([4001]);
+      await supervisor.stop();
+    });
+
+    it('starts a fresh core with a new session and a clean attempt budget', async () => {
+      const { supervisor, sessions, cores } = build(() => new FakeCore());
+      await supervisor.start();
+      await supervisor.terminate();
+
+      const state = await settleOn(() => supervisor.state(), ['running']);
+      expect(cores).toHaveLength(2);
+      expect(sessions).toEqual([49_001, null, 49_002]);
+      expect(state.attempts).toBe(0);
+      await supervisor.stop();
+    });
+
+    it('does not count its own kill as a crash', async () => {
+      const { supervisor, cores } = build(() => new FakeCore());
+      await supervisor.start();
+      await supervisor.terminate();
+      // The terminated process's exit arrives after MAIN has let go of it.
+      cores[0]?.exit(1);
+      await settleOn(() => supervisor.state(), ['running']);
+      expect(supervisor.state().lastError).toBeNull();
+      expect(cores).toHaveLength(2);
+      await supervisor.stop();
+    });
+
+    it('answers false, and terminates nothing, with no core running', async () => {
+      const { supervisor, terminated } = build(() => new FakeCore());
+      expect(await supervisor.terminate()).toBe(false);
+      await supervisor.start();
+      await supervisor.stop();
+      expect(await supervisor.terminate()).toBe(false);
+      expect(terminated).toEqual([]);
+    });
+
+    it('never terminates a PID MAIN has already seen exit', async () => {
+      const { supervisor, terminated, cores } = build(() => new LauncherCore(7000));
+      await supervisor.start();
+      cores[0]?.exit(1);
+      expect(await supervisor.terminate()).toBe(false);
+      expect(terminated).toEqual([]);
+      await supervisor.stop();
+    });
+  });
 });

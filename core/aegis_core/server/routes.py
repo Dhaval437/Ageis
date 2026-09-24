@@ -19,6 +19,7 @@ from anyio.abc import TaskGroup
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from aegis_core import __version__
+from aegis_core.actuation.killswitch import KillSwitch
 from aegis_core.models.schemas import ProviderId
 from aegis_core.models.service import ModelService
 from aegis_core.server.hub import (
@@ -34,6 +35,7 @@ from aegis_core.server.schemas import (
     HealthResponse,
     KeyRequest,
     KeyResponse,
+    KillResponse,
     ModelCatalog,
     SettingsRequest,
     SettingsResponse,
@@ -60,6 +62,25 @@ async def health(request: Request) -> HealthResponse:
         status="ok",
         version=__version__,
         uptime=round(time.monotonic() - started, 3),
+    )
+
+
+@router.post("/kill", response_model=KillResponse)
+async def kill(request: Request) -> KillResponse:
+    """The kill switch's polite half (`P3-06`): freeze, and release every held key.
+
+    Deliberately `async` and synchronous inside: it runs on the event loop rather than
+    queueing for a worker thread, so a saturated thread pool cannot delay it — and if
+    the loop itself is wedged, MAIN's deadline passes and it terminates the process,
+    which is the answer a wedged core should get.
+    """
+    switch: KillSwitch = request.app.state.kill_switch
+    report = switch.engage()
+    return KillResponse(
+        engaged=True,
+        released_keys=report.released_keys,
+        released_buttons=report.released_buttons,
+        release_failures=report.release_failures,
     )
 
 

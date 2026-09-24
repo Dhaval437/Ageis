@@ -7,12 +7,11 @@
 
 import type { MenuItemConstructorOptions } from 'electron';
 
-/** The kill-switch accelerator from `UI.md § 4`. Registered for real in P3-06. */
-export const KILL_SWITCH_ACCELERATOR = 'Control+Alt+Shift+Q';
-
 export interface TrayMenuState {
   readonly windowVisible: boolean;
   readonly taskRunning: boolean;
+  /** The kill-switch binding in force (`hotkeys.ts`), shown beside *Stop the agent*. */
+  readonly killSwitch: string;
 }
 
 export interface TrayMenuActions {
@@ -29,10 +28,14 @@ export function buildTrayMenuTemplate(
     { label: state.taskRunning ? 'Aegis — running' : 'Aegis — idle', enabled: false },
     { type: 'separator' },
     {
-      // Disabled while nothing is running: there is no agent to stop. P3-06
-      // makes this do the real hard stop.
+      // Disabled while nothing is running: there is no agent to stop. When
+      // enabled it is the kill switch itself (`kill-switch.ts`), for the user
+      // who reaches for the mouse instead of the keyboard.
       label: 'Stop the agent',
-      accelerator: KILL_SWITCH_ACCELERATOR,
+      accelerator: state.killSwitch,
+      // Display only: the global shortcut is registered by `hotkeys.ts`, and a
+      // second registration here would be one the rebind could not move.
+      registerAccelerator: false,
       enabled: state.taskRunning,
       click: actions.stopAgent,
     },

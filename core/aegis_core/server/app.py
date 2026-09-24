@@ -23,6 +23,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from aegis_core import __version__
+from aegis_core.actuation.killswitch import KillSwitch
 from aegis_core.models.service import ModelService
 from aegis_core.server.auth import SessionAuth, SessionAuthMiddleware
 from aegis_core.server.hub import EventHub
@@ -71,6 +72,7 @@ def create_app(
     auth: SessionAuth,
     hub: EventHub | None = None,
     models: ModelService | None = None,
+    kill_switch: KillSwitch | None = None,
 ) -> FastAPI:
     """Build the core's HTTP app, authenticated against this session's token.
 
@@ -82,6 +84,10 @@ def create_app(
     test of the routing surface has no business opening — and because a subsystem that is
     not there is the `unavailable` every other one already answers (`P0-04`). Its routes
     answer `503` without it.
+
+    `kill_switch` is the one every `InputController` in this process must be attached
+    to, reached as `app.state.kill_switch`; `POST /v1/kill` engages it (`P3-06`). One
+    is created if none is given.
     """
     app = FastAPI(
         title="AEGIS core",
@@ -94,6 +100,7 @@ def create_app(
     app.state.started_monotonic = time.monotonic()
     app.state.hub = hub if hub is not None else EventHub()
     app.state.models = models
+    app.state.kill_switch = kill_switch if kill_switch is not None else KillSwitch()
     app.add_exception_handler(RequestValidationError, _on_invalid_request)
     app.include_router(router)
     # Added last so it wraps everything, including FastAPI's own 404 and 405

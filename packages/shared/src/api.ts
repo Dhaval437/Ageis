@@ -50,6 +50,23 @@ export interface HealthResponse {
   readonly uptime: number;
 }
 
+/**
+ * `POST /v1/kill` — the core's acknowledgement of the kill switch (`P3-06`).
+ *
+ * MAIN reads a `200` inside its deadline as "input has stopped"; anything else, or
+ * nothing, and it terminates the core. Counts only: nothing a key name could be in.
+ */
+export interface KillResponse {
+  /** Always `true`; the switch stays engaged. */
+  readonly engaged: true;
+  /** Keys released across every controller. */
+  readonly released_keys: number;
+  /** Mouse buttons released. */
+  readonly released_buttons: number;
+  /** Controllers whose release raised. Non-zero means a key may still be held. */
+  readonly release_failures: number;
+}
+
 /** One message on `WS /v1/stream` (`ARCHITECTURE.md § 9.2`). */
 export interface StreamEvent {
   /** Monotonic within one core process, starting at 1. */

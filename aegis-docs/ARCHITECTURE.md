@@ -90,7 +90,7 @@ aegis/
 ├─ package.json  pnpm-workspace.yaml  turbo.json
 ├─ apps/
 │  ├─ desktop/                    # Electron MAIN + preload
-│  │  ├─ src/main/                # index.ts, supervisor.ts, hotkeys.ts, updater.ts, ipc.ts
+│  │  ├─ src/main/                # index.ts, supervisor.ts, hotkeys.ts, kill-switch.ts, updater.ts, ipc.ts
 │  │  ├─ src/preload/             # bridge.ts  (the ONLY surface exposed to the renderer)
 │  │  └─ electron-builder.yml
 │  └─ renderer/                   # React app
@@ -103,7 +103,7 @@ aegis/
 │  │  ├─ models/                  # router.py, providers/*.py, schemas.py, budget.py, service.py
 │  │  ├─ tools/                   # registry.py + one module per tool family
 │  │  ├─ perception/              # display.py (+ win32.py), screen.py, uia_tree.py, redact.py, prune.py, mark.py, ocr.py, grounding.py, phash.py
-│  │  ├─ actuation/               # input.py (SendInput), window.py, preempt.py
+│  │  ├─ actuation/               # input.py (SendInput), window.py, preempt.py, killswitch.py
 │  │  ├─ guardian/                # policy.py, rules.yaml, risk.py, approvals.py
 │  │  ├─ recovery/                # journal.py, undo.py, snapshot.py
 │  │  ├─ storage/                 # db.py, migrations/, audit.py, vault.py, usage.py, settings.py
@@ -345,6 +345,8 @@ A background thread installs `WH_MOUSE_LL` and `WH_KEYBOARD_LL` hooks. Aegis' ow
   4. shows the "You took over" pill in the UI with **Resume** / **Resume with new instruction** / **Stop**.
 - Aegis never fights the user for the cursor. It does not re-take focus while paused.
 - **Kill switch:** global hotkey (default `Ctrl+Alt+Shift+Q`, rebindable, registered in Electron MAIN so it works even if the core hangs) → immediate hard stop: cancel all tasks, release keys, kill child job processes, freeze the agent, surface the last 5 actions with an Undo offer. Also available as a persistent overlay button and a tray item.
+  - *How (P3-06).* `main/hotkeys.ts` owns the binding: two or more modifiers plus one key, saved to `%LOCALAPPDATA%\Aegis\hotkeys.json` (MAIN's file, not a core setting, so it arms with no core), a rebind registers the new shortcut **before** releasing the old, and a switch that cannot be registered makes `hotkeys.get()` refuse rather than show a binding that does nothing. `main/kill-switch.ts` is the press: `POST /v1/kill` with a **100 ms** deadline; a healthy core engages `actuation/killswitch.py` — every `InputController` attached to it aborts at its next checkpoint and has its keys and buttons released, and the switch stays engaged until a new task starts — answers, and **stays running**. No acknowledgement in time, and the supervisor **terminates** the core (`TerminateProcess` on the handshake PID and on MAIN's child, which differ in development) and starts a fresh one. Measured against the real core: 2.8–7.8 ms acknowledged; **102 ms** from the press to a *suspended* core being dead.
+  - *Not yet.* A terminated core's held keys stay down (Windows keeps an injected `KEYDOWN` after the injector dies) until MAIN can send its own `KEYUP`s — `P3-15`. Job children are stopped by the **Job Object** `P5-08` must put them in (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), so they die with the core; MAIN does not walk the process tree, because `taskkill /T` took ~300 ms here and a tree walk by parent PID loses a child whose parent has already died. The "Stopped by you" UI and the last-five-actions view are `P3-14`.
 - A **watchdog** in MAIN pings the core every second. Two missed pings while a task is running → MAIN kills the core. A hung agent must never be a still-clicking agent.
 
 ### 8.4 Sensitive-content handling
@@ -383,6 +385,7 @@ A background thread installs `WH_MOUSE_LL` and `WH_KEYBOARD_LL` hooks. Aegis' ow
 
 ```
 GET  /health                      -> {status, version, uptime}
+POST /kill                        -> {engaged, released_keys, released_buttons, release_failures}   (P3-06)
 POST /tasks                       -> {task_id}     body: {goal, scope_id, autonomy, model_map?}
 GET  /tasks/{id}                  -> Task
 POST /tasks/{id}/pause|resume|stop
