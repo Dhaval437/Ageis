@@ -53,6 +53,9 @@ SM_CYVIRTUALSCREEN: Final = 79
 DWMWA_EXTENDED_FRAME_BOUNDS: Final = 9
 DWMWA_CLOAKED: Final = 14
 
+#: `GetAncestor`: the top-level window a child belongs to.
+GA_ROOT: Final = 2
+
 # ---------------------------------------------------------------------------
 # Structures — field names are Win32's (see the N815 exemption in pyproject.toml)
 # ---------------------------------------------------------------------------
@@ -139,6 +142,12 @@ user32.GetWindowRect.restype = wintypes.BOOL
 
 user32.EnumWindows.argtypes = (WNDENUMPROC, wintypes.LPARAM)
 user32.EnumWindows.restype = wintypes.BOOL
+
+user32.WindowFromPoint.argtypes = (wintypes.POINT,)
+user32.WindowFromPoint.restype = wintypes.HWND
+
+user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+user32.GetAncestor.restype = wintypes.HWND
 
 # HRESULT as a plain LONG, for the same reason as `GetDpiForMonitor`.
 dwmapi.DwmGetWindowAttribute.argtypes = (
@@ -285,6 +294,20 @@ def window_rect(hwnd: int) -> wintypes.RECT | None:
     if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
         return rect
     return None
+
+
+def root_window_at(x: int, y: int) -> int:
+    """The top-level window a click at `(x, y)` would reach, or 0 if none would.
+
+    `WindowFromPoint` hit-tests the way a real click does — a click-through
+    overlay is passed over, a covering window is not — and returns the deepest
+    child, so `GetAncestor(GA_ROOT)` names the top-level window it belongs to.
+    """
+    hwnd: int | None = user32.WindowFromPoint(wintypes.POINT(x, y))
+    if not hwnd:
+        return 0
+    root: int | None = user32.GetAncestor(hwnd, GA_ROOT)
+    return root or 0
 
 
 def enum_windows(limit: int) -> list[int]:

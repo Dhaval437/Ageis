@@ -50,13 +50,19 @@ import math
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from functools import cache
 from typing import Any, Final, Protocol
 
 from aegis_core.perception import win32
-from aegis_core.perception.display import DisplayLayout, Rect, query_layout, verify_layout
+from aegis_core.perception.display import (
+    DisplayLayout,
+    Point,
+    Rect,
+    query_layout,
+    verify_layout,
+)
 
 #: `COINIT_MULTITHREADED`. Must be in place before `comtypes` is first imported.
 COINIT_MULTITHREADED: Final = 0x0
@@ -386,16 +392,22 @@ class _ComNode:
         return [_ComNode(array.GetElement(i)) for i in range(array.Length)]
 
 
+def _automation(client: Any) -> Any:
+    """A UIA client object whose calls into a target app are bounded by `TIMEOUT_MS`."""
+    automation = comtypes.client.CreateObject(
+        client.CUIAutomation8, interface=client.IUIAutomation2
+    )
+    automation.ConnectionTimeout = TIMEOUT_MS
+    automation.TransactionTimeout = TIMEOUT_MS
+    return automation
+
+
 def _read(hwnd: int) -> tuple[tuple[UiaElement, ...], bool]:
     """Fetch `hwnd`'s control view in one round trip and flatten it."""
     _join_mta()
     client = _client_module()
     try:
-        automation = comtypes.client.CreateObject(
-            client.CUIAutomation8, interface=client.IUIAutomation2
-        )
-        automation.ConnectionTimeout = TIMEOUT_MS
-        automation.TransactionTimeout = TIMEOUT_MS
+        automation = _automation(client)
         request = automation.CreateCacheRequest()
         for property_id in PROPERTIES:
             request.AddProperty(property_id)
@@ -406,6 +418,43 @@ def _read(hwnd: int) -> tuple[tuple[UiaElement, ...], bool]:
         return flatten(_ComNode(root))
     except comtypes.COMError as error:
         raise _uia_error(int(error.hresult)) from None
+
+
+def hit_chain(
+    point: Point, stop: Collection[tuple[int, ...]], *, limit: int = MAX_DEPTH
+) -> tuple[tuple[int, ...], ...]:
+    """The runtime ids of the element UIA finds at `point`, then of each parent above it.
+
+    UIA's hit test answers with the element a click at `point` would land on, in
+    whichever window is on top there. The chain climbs the control view from it
+    and ends at the first runtime id in `stop`, at the desktop, or after
+    `limit + 1` elements — so it is always bounded, and usually one or two calls
+    long, because the caller puts the element it expects, and that element's
+    ancestors, in `stop`.
+
+    Raises `DpiAwarenessError` on a thread that is not per-monitor aware — `point`
+    is a physical pixel, which only such a thread's hit test takes — and
+    `UiaError` when UIA refuses or the app does not answer in time.
+    """
+    query_layout()
+    _join_mta()
+    client = _client_module()
+    chain: list[tuple[int, ...]] = []
+    try:
+        automation = _automation(client)
+        request = automation.CreateCacheRequest()
+        request.AddProperty(UIA_RUNTIME_ID)
+        walker = automation.ControlViewWalker
+        element = automation.ElementFromPointBuildCache(client.tagPOINT(point.x, point.y), request)
+        while element:
+            runtime_id = _runtime_id(element.GetCachedPropertyValue(UIA_RUNTIME_ID))
+            chain.append(runtime_id)
+            if runtime_id in stop or len(chain) > limit:
+                break
+            element = walker.GetParentElementBuildCache(element, request)
+    except comtypes.COMError as error:
+        raise _uia_error(int(error.hresult)) from None
+    return tuple(chain)
 
 
 def _uia_error(hresult: int) -> UiaError:

@@ -13,8 +13,10 @@ set here must not change a prototype production code relies on.
 from __future__ import annotations
 
 import ctypes
+import queue
 import threading
 import time
+from collections.abc import Callable
 from ctypes import wintypes
 from typing import Final
 
@@ -193,6 +195,8 @@ WS_VISIBLE: Final = 0x10000000
 WS_DISABLED: Final = 0x08000000
 ES_PASSWORD: Final = 0x0020
 ES_AUTOHSCROLL: Final = 0x0080
+#: Without it a static control is transparent to hit testing and a click passes through.
+SS_NOTIFY: Final = 0x0100
 COLOR_BTNFACE: Final = 15
 
 FORM_CLASS_NAME: Final = "AegisUiaTestWindow"
@@ -202,6 +206,17 @@ user32.SetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPCWSTR)
 user32.SetWindowTextW.restype = wintypes.BOOL
 user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
 user32.GetWindowRect.restype = wintypes.BOOL
+user32.SetWindowPos.argtypes = (
+    wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+    wintypes.UINT,
+)  # fmt: skip
+user32.SetWindowPos.restype = wintypes.BOOL
+
+HWND_TOP: Final = 0
+SWP_NOSIZE: Final = 0x0001
+SWP_NOMOVE: Final = 0x0002
+SWP_NOZORDER: Final = 0x0004
+SWP_NOACTIVATE: Final = 0x0010
 
 
 def _register_form_class() -> None:
@@ -244,6 +259,7 @@ class FormWindow:
         self._ready = threading.Event()
         self._stop = threading.Event()
         self._hung = threading.Event()
+        self._calls: queue.Queue[tuple[Callable[[], None], threading.Event]] = queue.Queue()
         self._error: BaseException | None = None
         self._thread = threading.Thread(target=self._run, name="uia-form-window", daemon=True)
 
@@ -264,6 +280,45 @@ class FormWindow:
         """Stop answering messages for `seconds`."""
         self._hang_for = seconds
         self._hung.set()
+
+    def move_to(self, left: int, top: int) -> None:
+        """Move the window, keeping its size; its controls move with it."""
+
+        def move() -> None:
+            flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+            if not user32.SetWindowPos(self.hwnd, None, left, top, 0, 0, flags):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+        self._on_window_thread(move)
+        self.rect = Rect(left, top, left + self.rect.width, top + self.rect.height)
+
+    def cover(self, key: str, *, takes_clicks: bool = True) -> None:
+        """Put a static label on top of control `key`, inside this same window.
+
+        Something drawn over a control by its own app — no other window is
+        involved, so only UI Automation's hit test can see it. With
+        `takes_clicks`, the label is `SS_NOTIFY` and catches the clicks aimed at
+        the control; without, it is click-through, as most labels are.
+        """
+
+        def add() -> None:
+            rect = self.child_rect(key)
+            style = SS_NOTIFY if takes_clicks else 0
+            x, y = rect.left - self.rect.left, rect.top - self.rect.top
+            cover = self._create(self.hwnd, "STATIC", "cover", style, x, y)
+            flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+            if not user32.SetWindowPos(cover, HWND_TOP, 0, 0, 0, 0, flags):
+                raise ctypes.WinError(ctypes.get_last_error())
+            self.children["cover"] = cover
+
+        self._on_window_thread(add)
+
+    def _on_window_thread(self, call: Callable[[], None]) -> None:
+        """Run `call` on the thread that owns the window, and wait for it."""
+        done = threading.Event()
+        self._calls.put((call, done))
+        if not done.wait(5):
+            raise TimeoutError("the form window's thread did not run the call")
 
     def child_rect(self, key: str) -> Rect:
         rect = wintypes.RECT()
@@ -312,6 +367,12 @@ class FormWindow:
                 if self._hung.is_set():
                     self._hung.clear()
                     time.sleep(self._hang_for)
+                while not self._calls.empty():
+                    call, done = self._calls.get()
+                    try:
+                        call()
+                    finally:
+                        done.set()
                 while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, PM_REMOVE):
                     user32.TranslateMessage(ctypes.byref(message))
                     user32.DispatchMessageW(ctypes.byref(message))

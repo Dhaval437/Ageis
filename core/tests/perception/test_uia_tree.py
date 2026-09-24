@@ -14,7 +14,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 
 import pytest
 
@@ -29,6 +29,7 @@ from aegis_core.perception.display import (  # noqa: E402
     DpiAwarenessError,
     LayoutChangedError,
     Monitor,
+    Point,
     Rect,
     ensure_dpi_awareness,
     query_layout,
@@ -674,3 +675,183 @@ def test_the_live_foreground_window_can_be_read() -> None:
     assert tree.hwnd == hwnd
     assert tree.elements
     assert tree.elements[0].parent is None
+
+
+# --------------------------------------------------------------------------- #
+# Hit test: what a click at a point would land on
+# --------------------------------------------------------------------------- #
+
+
+class _HitElement:
+    """An element found by a hit test, with its runtime id cached and a parent."""
+
+    def __init__(self, runtime_id: object, parent: _HitElement | None = None) -> None:
+        self.runtime_id = runtime_id
+        self.parent = parent
+
+    def GetCachedPropertyValue(self, property_id: int) -> object:  # noqa: N802 - COM's name
+        assert property_id == uia_tree.UIA_RUNTIME_ID
+        return self.runtime_id
+
+
+class _Walker:
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+
+    def GetParentElementBuildCache(  # noqa: N802
+        self, element: _HitElement, request: _CacheRequest
+    ) -> _HitElement | None:
+        assert request.properties == [uia_tree.UIA_RUNTIME_ID]
+        self._calls.append("parent")
+        return element.parent
+
+
+class _HitAutomation(_Automation):
+    def __init__(self, hit: _HitElement | None) -> None:
+        super().__init__(FakeNode("window"))
+        self.hit = hit
+        self.calls: list[str] = []
+        self.ControlViewWalker = _Walker(self.calls)
+        self.point: tuple[int, int] | None = None
+
+    def ElementFromPointBuildCache(  # noqa: N802
+        self, point: object, request: _CacheRequest
+    ) -> _HitElement | None:
+        assert request is self.request
+        self.point = (point.x, point.y)  # type: ignore[attr-defined]
+        self.timeouts_when_asked = (self.ConnectionTimeout, self.TransactionTimeout)
+        self.calls.append("hit")
+        return self.hit
+
+
+def _line(length: int) -> _HitElement:
+    """A hit on `(1, length - 1)`, inside `(1, length - 2)`, ..., inside `(1, 0)`."""
+    element: _HitElement | None = None
+    for index in range(length):
+        element = _HitElement((1, index), element)
+    assert element is not None
+    return element
+
+
+@pytest.fixture
+def hits(monkeypatch: pytest.MonkeyPatch) -> Callable[[_HitElement | None], _HitAutomation]:
+    def install(hit: _HitElement | None) -> _HitAutomation:
+        automation = _HitAutomation(hit)
+        monkeypatch.setattr(comtypes.client, "CreateObject", lambda *_a, **_k: automation)
+        return automation
+
+    return install
+
+
+def test_the_hit_chain_climbs_from_the_hit_to_the_first_stop(
+    hits: Callable[[_HitElement | None], _HitAutomation],
+) -> None:
+    automation = hits(_line(5))
+    chain = uia_tree.hit_chain(Point(12, 34), {(1, 2), (1, 0)})
+    assert chain == ((1, 4), (1, 3), (1, 2))
+    assert automation.point == (12, 34)
+    assert automation.calls == ["hit", "parent", "parent"]
+
+
+def test_a_hit_on_a_stop_is_one_call(
+    hits: Callable[[_HitElement | None], _HitAutomation],
+) -> None:
+    automation = hits(_line(5))
+    assert uia_tree.hit_chain(Point(0, 0), {(1, 4)}) == ((1, 4),)
+    assert automation.calls == ["hit"]
+
+
+def test_the_hit_chain_ends_at_the_desktop_when_no_stop_is_met(
+    hits: Callable[[_HitElement | None], _HitAutomation],
+) -> None:
+    hits(_line(3))
+    assert uia_tree.hit_chain(Point(0, 0), {(9, 9)}) == ((1, 2), (1, 1), (1, 0))
+
+
+def test_nothing_at_the_point_is_an_empty_chain(
+    hits: Callable[[_HitElement | None], _HitAutomation],
+) -> None:
+    automation = hits(None)
+    assert uia_tree.hit_chain(Point(0, 0), {(1, 0)}) == ()
+    assert automation.calls == ["hit"]
+
+
+def test_the_hit_chain_is_bounded_even_if_a_provider_loops(
+    hits: Callable[[_HitElement | None], _HitAutomation],
+) -> None:
+    """`REVIEW.md § 2`: a provider is other people's code; its parent can be itself."""
+    looped = _HitElement((5, 5))
+    looped.parent = looped
+    automation = hits(looped)
+    chain = uia_tree.hit_chain(Point(0, 0), {(9, 9)}, limit=10)
+    assert len(chain) == 11
+    assert automation.calls.count("parent") == 10
+
+
+def test_a_junk_runtime_id_reads_as_empty_and_never_matches_a_stop(
+    hits: Callable[[_HitElement | None], _HitAutomation],
+) -> None:
+    hits(_HitElement("junk", _HitElement((1, 0))))
+    assert uia_tree.hit_chain(Point(0, 0), {(1, 0)}) == ((), (1, 0))
+
+
+def test_the_hit_test_is_bounded_by_the_same_timeouts_as_a_walk(
+    hits: Callable[[_HitElement | None], _HitAutomation],
+) -> None:
+    automation = hits(_line(1))
+    uia_tree.hit_chain(Point(0, 0), set())
+    assert automation.timeouts_when_asked == (TIMEOUT_MS, TIMEOUT_MS)
+    assert automation.request.properties == [uia_tree.UIA_RUNTIME_ID]
+
+
+def test_a_hit_test_com_failure_becomes_a_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise comtypes.COMError(uia_tree.UIA_E_TIMEOUT - (1 << 32), "provider text", ())
+
+    monkeypatch.setattr(comtypes.client, "CreateObject", fail)
+    with pytest.raises(UiaError, match="did not answer") as caught:
+        uia_tree.hit_chain(Point(0, 0), set())
+    assert "provider text" not in str(caught.value)
+
+
+def test_an_unaware_thread_is_refused_a_hit_test_before_com_is_touched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The point is a physical pixel; an unaware thread's hit test takes a scaled one."""
+    touched: list[object] = []
+    monkeypatch.setattr(comtypes.client, "CreateObject", lambda *a, **_k: touched.append(a))
+    outcome: list[BaseException | object] = []
+
+    def run() -> None:
+        display_win32.set_thread_dpi_awareness_context(display_win32.DPI_AWARENESS_CONTEXT_UNAWARE)
+        try:
+            outcome.append(uia_tree.hit_chain(Point(0, 0), set()))
+        except BaseException as error:  # handed back to the test thread
+            outcome.append(error)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join(timeout=10)
+    assert isinstance(outcome[0], DpiAwarenessError)
+    assert touched == []
+
+
+def test_a_live_hit_test_lands_on_the_button_and_climbs_to_its_window(form: FormWindow) -> None:
+    tree = walk(form.hwnd)
+    button = _by_name(tree, FormWindow.BUTTON)
+    rect = form.child_rect("button")
+    centre = Point(rect.left + rect.width // 2, rect.top + rect.height // 2)
+    assert uia_tree.hit_chain(centre, {button.runtime_id}) == (button.runtime_id,)
+    window = tree.elements[0].runtime_id
+    assert uia_tree.hit_chain(centre, {window}) == (button.runtime_id, window)
+    assert display_win32.root_window_at(centre.x, centre.y) == form.hwnd
+
+
+def test_a_live_hit_test_on_a_hung_window_fails_within_the_timeout(form: FormWindow) -> None:
+    rect = form.child_rect("button")
+    form.hang(TIMEOUT_MS / 1000 + 3)
+    time.sleep(0.1)
+    started = time.monotonic()
+    with pytest.raises(UiaError, match="did not answer"):
+        uia_tree.hit_chain(Point(rect.left + 5, rect.top + 5), set())
+    assert time.monotonic() - started < TIMEOUT_MS / 1000 + 1.5
