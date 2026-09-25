@@ -164,6 +164,22 @@ describe('createWatchdog', () => {
     watchdog.stop();
   });
 
+  it('does not kill a core whose task ended while the deciding ping was out', async () => {
+    let running = true;
+    const gateway = scriptedGateway('hang');
+    const { watchdog, terminate } = build({ gateway: () => gateway, taskRunning: () => running });
+    watchdog.start();
+
+    // The second ping is in flight; the task finishes before its deadline.
+    await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS + 1.5 * PING_TIMEOUT_MS);
+    running = false;
+    await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS);
+
+    expect(gateway.calls).toHaveLength(2);
+    expect(terminate).not.toHaveBeenCalled();
+    watchdog.stop();
+  });
+
   it('does nothing while there is no core', async () => {
     const { watchdog, terminate } = build({ gateway: () => null });
     watchdog.start();
@@ -182,11 +198,12 @@ describe('createWatchdog', () => {
     // One miss against the first core, then the supervisor hands over a new one.
     await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS + PING_TIMEOUT_MS);
     current = second;
-    await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS);
+    // The new core's first miss: carried over, that would have been two.
+    await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS + SLACK_MS);
     expect(terminate).not.toHaveBeenCalled();
 
-    // Two of its own, and the second core is judged.
-    await vi.advanceTimersByTimeAsync(2 * PING_TIMEOUT_MS);
+    // Its own second miss, and the second core is judged.
+    await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS);
     expect(terminate).toHaveBeenCalledOnce();
     expect(second.calls.length).toBeGreaterThanOrEqual(MISSES_TO_KILL);
     watchdog.stop();

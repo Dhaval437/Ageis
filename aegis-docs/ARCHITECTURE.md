@@ -90,7 +90,7 @@ aegis/
 ├─ package.json  pnpm-workspace.yaml  turbo.json
 ├─ apps/
 │  ├─ desktop/                    # Electron MAIN + preload
-│  │  ├─ src/main/                # index.ts, supervisor.ts, hotkeys.ts, kill-switch.ts, updater.ts, ipc.ts
+│  │  ├─ src/main/                # index.ts, supervisor.ts, hotkeys.ts, kill-switch.ts, watchdog.ts, task-activity.ts, updater.ts, ipc.ts
 │  │  ├─ src/preload/             # bridge.ts  (the ONLY surface exposed to the renderer)
 │  │  └─ electron-builder.yml
 │  └─ renderer/                   # React app
@@ -348,6 +348,8 @@ A background thread installs `WH_MOUSE_LL` and `WH_KEYBOARD_LL` hooks. Aegis' ow
   - *How (P3-06).* `main/hotkeys.ts` owns the binding: two or more modifiers plus one key, saved to `%LOCALAPPDATA%\Aegis\hotkeys.json` (MAIN's file, not a core setting, so it arms with no core), a rebind registers the new shortcut **before** releasing the old, and a switch that cannot be registered makes `hotkeys.get()` refuse rather than show a binding that does nothing. `main/kill-switch.ts` is the press: `POST /v1/kill` with a **100 ms** deadline; a healthy core engages `actuation/killswitch.py` — every `InputController` attached to it aborts at its next checkpoint and has its keys and buttons released, and the switch stays engaged until a new task starts — answers, and **stays running**. No acknowledgement in time, and the supervisor **terminates** the core (`TerminateProcess` on the handshake PID and on MAIN's child, which differ in development) and starts a fresh one. Measured against the real core: 2.8–7.8 ms acknowledged; **102 ms** from the press to a *suspended* core being dead.
   - *Not yet.* A terminated core's held keys stay down (Windows keeps an injected `KEYDOWN` after the injector dies) until MAIN can send its own `KEYUP`s — `P3-15`. Job children are stopped by the **Job Object** `P5-08` must put them in (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), so they die with the core; MAIN does not walk the process tree, because `taskkill /T` took ~300 ms here and a tree walk by parent PID loses a child whose parent has already died. The "Stopped by you" UI and the last-five-actions view are `P3-14`.
 - A **watchdog** in MAIN pings the core every second. Two missed pings while a task is running → MAIN kills the core. A hung agent must never be a still-clicking agent.
+  - *How (P3-07).* `main/watchdog.ts`: while a task is `RUNNING`, `GET /v1/health` once a second with a **1 s** deadline; anything but a `200` in time is a miss, and **two in a row against the same core** make the supervisor `terminate('watchdog')` — the same `TerminateProcess` path as the kill switch's last resort, but **counted** against the 3-in-60 s budget, because nobody asked for it. A round whose own deadline fired more than 250 ms late is *inconclusive* and resets the count: MAIN, or the whole machine, was the one that stopped (sleep, a blocked MAIN), and that says nothing about the core. "A task is running" comes from `main/task-activity.ts`, which reads the `task.status` events MAIN already forwards (§ 9.2) — pushed, so it survives the core going silent — and forgets everything on a stream `reset`. Only `RUNNING` counts: paused, queued or waiting for an approval, a stalled core is not a clicking one. Measured against a real process tree: a core that wedges mid-task is dead **~2.5 s** later (worst case 3 s: a full interval plus two deadlines).
+  - *Not yet.* Nothing publishes `task.status` until P4, so the watchdog is armed but has nothing to watch. Until P6-06 the stream replays from memory, so a `RUNNING` that has aged out of the 2048-event buffer before a replay-from-scratch is not seen — the one way this fails open. A terminated core's held keys are `P3-15`, on the same `terminate()` path.
 
 ### 8.4 Sensitive-content handling
 
@@ -440,6 +442,7 @@ Wire details (P0-08, `server/hub.py` + `server/routes.py`; model `StreamEvent` i
 - The upgrade goes through the same session auth as REST (token, no `Origin`, peer PID). A refused upgrade is a bare HTTP 403.
 - No `since` → replay everything retained, then live. `since=N` → replay exactly the events after `N`, or refuse; a stream with a hole in it is never sent.
 - The stream is one-way. Commands go over REST.
+- **`task.status`** carries `{ "status": TaskState }` — one of `RECOVERY.md § 3.1`'s states, the same words `tasks.status` is `CHECK`ed against (`TaskState` in `server/schemas.py`; a test holds the two equal). MAIN reads it for the watchdog (P3-07); P4 publishes it and may add fields, never change this one.
 - **`cost.updated`** (P1-09) is published by the budget guard after every model call, with `task_id` set to the task it was made for, or `null` for a call outside one. Its payload is numbers and model ids only — nothing a prompt, a path or a key could be in:
 
   ```jsonc

@@ -100,7 +100,6 @@ describe('the watchdog, live', () => {
     const coreGone = await until(() => !alive(core), WORST_CASE_MS + 1_000);
     const detectedMs = performance.now() - wedgedAt;
 
-    console.info(`watchdog: wedged core dead ${detectedMs.toFixed(0)} ms after the wedge`);
     expect(coreGone).toBe(true);
     expect(detectedMs).toBeLessThan(WORST_CASE_MS + 500);
     expect(reports).toEqual([expect.objectContaining({ outcome: 'terminated', misses: 2 })]);

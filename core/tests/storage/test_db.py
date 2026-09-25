@@ -11,7 +11,8 @@ from typing import get_args
 import pytest
 from aegis_core.server.schemas import TaskState
 from aegis_core.storage.db import StorageError, bootstrap, connect, migrate, schema_version
-from aegis_core.storage.migrations import MIGRATIONS, Migration, m0001_initial as m0001
+from aegis_core.storage.migrations import MIGRATIONS, Migration
+from aegis_core.storage.migrations import m0001_initial as m0001
 
 #: `ARCHITECTURE.md § 7`, plus `forward_json`/`created_at` on `journal` from
 #: `RECOVERY.md § 2.1`. A column dropped or renamed by accident fails here.
