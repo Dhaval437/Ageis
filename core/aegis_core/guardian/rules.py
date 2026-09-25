@@ -29,19 +29,23 @@ import hashlib
 import ntpath
 import os
 import re
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from importlib import resources
+from pathlib import Path
 from typing import Annotated, Final, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
+from aegis_core.storage.db import default_data_dir
+
 #: SHA-256 of `rules.yaml` with CRLF read as LF, so a Windows checkout's line endings
 #: do not change it. Update it in the same commit as the file; `test_rules.py` prints
 #: the digest the file actually has.
-RULES_SHA256: Final = "f1312a0481e05bfba270e097d68c4034d89da47dab0d9f06706ca4b61e68b76b"
+RULES_SHA256: Final = "76f02cf5b6be6d7bbb4ba7ac89f411de0c9ce423beec9179d6be61dda26bcadd"
 
 #: What `%NAME%` may stand for in a path pattern. Anything else is a load error.
 PATH_VARIABLES: Final = frozenset(
@@ -56,6 +60,32 @@ PATH_VARIABLES: Final = frozenset(
         "USERPROFILE",
     }
 )
+
+#: Variables the loader computes from the running core rather than the environment
+#: (`P3-09`): where Aegis keeps its own data, and where it is installed. The install
+#: directory is the user's choice at setup, so it cannot be written into the file.
+COMPUTED_VARIABLES: Final = frozenset({"AEGIS_DATA", "AEGIS_INSTALL"})
+
+
+def aegis_install_dir() -> Path:
+    r"""The folder Aegis is installed in, from where this process is running.
+
+    Packaged, the core is `<install>\resources\core\aegis-core.exe`, so the install
+    directory is three levels up from the executable. In development it is the
+    repository root, which holds `core\aegis_core\` — the agent may not rewrite its
+    own source either. Read from the process, never from the environment, so a
+    variable cannot move it.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parents[2]
+    return Path(__file__).resolve().parents[3]
+
+
+def _computed(name: str) -> str:
+    if name == "AEGIS_DATA":
+        return str(default_data_dir())
+    return str(aegis_install_dir())
+
 
 #: Win32's own limit on a path; anything longer is not a path Windows will open.
 MAX_PATH_CHARS: Final = 32_767
@@ -204,6 +234,8 @@ def canonical_key(value: str) -> str | None:
 def _expand(pattern: str, entry: str) -> str:
     def replace(match: re.Match[str]) -> str:
         name = match.group(1).upper()
+        if name in COMPUTED_VARIABLES:
+            return _computed(name)
         if name not in PATH_VARIABLES:
             raise RulesError(f"Rule {entry!r} uses %{match.group(1)}%, which is not allowed.")
         value = os.environ.get(name)
@@ -235,6 +267,25 @@ def _canonical_key_pattern(pattern: str, entry: str) -> str:
     return key
 
 
+#: What shells strip before they run a word: cmd's `^` escape, PowerShell's backtick
+#: escape, and the quotes that split a word into pieces (`for^mat`, `fo`rmat`,
+#: `"vss"admin`). Removing them can only make a command *more* like a rule.
+_SHELL_NOISE: Final = str.maketrans("", "", "^`\"'")
+_WHITESPACE: Final = re.compile(r"\s+")
+
+
+def command_forms(text: str) -> tuple[str, ...]:
+    """The command as written, and with shell escapes and quotes removed.
+
+    A rule is searched in both, and either matching is a match: the plain form is
+    what the rule's author wrote against, the other is what the shell will run.
+    This is not a parser. It defeats the cheapest disguises, and the shell tool is
+    DANGEROUS anyway, so a person approves whatever gets past it.
+    """
+    stripped = _WHITESPACE.sub(" ", text.translate(_SHELL_NOISE))
+    return (text,) if stripped == text else (text, stripped)
+
+
 def _place_matches(target: str, pattern: str) -> bool:
     """A place is matched by itself and by everything under it."""
     return fnmatchcase(target, pattern) or fnmatchcase(target, pattern + "\\*")
@@ -252,7 +303,9 @@ class _Compiled:
         if self.entry.access == "write" and target.access != "write":
             return False
         if self.entry.kind == "command":
-            return any(regex.search(canonical) for regex in self.commands)
+            return any(
+                regex.search(form) for form in command_forms(canonical) for regex in self.commands
+            )
         return any(_place_matches(canonical, place) for place in self.places)
 
 

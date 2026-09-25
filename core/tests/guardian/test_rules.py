@@ -84,7 +84,8 @@ def test_the_shipped_file_loads() -> None:
 
 
 def test_an_edited_file_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    edited = read_packaged_rules().replace("forbidden: []", "forbidden: []\n# harmless?")
+    # Even a comment: the digest is of the file, not of what it means.
+    edited = read_packaged_rules() + "\n# harmless?\n"
     monkeypatch.setattr(rules, "read_packaged_rules", lambda: edited)
     with pytest.raises(RulesError, match="changed since it was reviewed"):
         load_rules()

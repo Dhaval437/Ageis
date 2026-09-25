@@ -13,16 +13,280 @@
 #   reason    one sentence shown to the user. Never quotes what was matched.
 #
 # Patterns:
-#   path      a place: it matches the place and everything under it. `*` is a wildcard
-#             (and crosses folders). Allowed variables: %WINDIR% %SYSTEMROOT%
-#             %PROGRAMFILES% %PROGRAMFILES(X86)% %PROGRAMDATA% %APPDATA%
-#             %LOCALAPPDATA% %USERPROFILE%.
-#   command   a regular expression, searched case-insensitively in the command text.
+#   path      a place: it matches the place and everything under it, never a longer
+#             name that starts with it (`Login Data` does not cover `Login Data-journal`;
+#             write `Login Data*`). `*` is a wildcard and crosses folders. Variables:
+#             %WINDIR% %SYSTEMROOT% %PROGRAMFILES% %PROGRAMFILES(X86)% %PROGRAMDATA%
+#             %APPDATA% %LOCALAPPDATA% %USERPROFILE% from the environment, and
+#             %AEGIS_DATA% %AEGIS_INSTALL%, which the core computes itself.
+#   command   a regular expression, searched case-insensitively in the command text as
+#             written and again with shell escapes and quotes removed (`for^mat`).
 #   registry  a key: it matches the key and everything under it. `*` is a wildcard.
 #             HKLM / HKCU / HKCR / HKU / HKCC are accepted for the long hive names.
 #
-# The FORBIDDEN list itself — and a negative test for every entry — is P3-09.
+# Every entry, and every pattern in it, has a case in `tests/guardian/test_forbidden.py`
+# that proves it is denied; a new one without a case fails that test.
 
 version: 1
 
-forbidden: []
+forbidden:
+  # --- Windows itself ---------------------------------------------------------------
+
+  - id: windows-system-files
+    kind: path
+    access: write
+    patterns:
+      - '%WINDIR%'
+    reason: Aegis never changes Windows' own files.
+
+  - id: installed-programs
+    kind: path
+    access: write
+    patterns:
+      - '%PROGRAMFILES%'
+      - '%PROGRAMFILES(X86)%'
+    reason: Aegis never changes installed programs.
+
+  - id: startup-folders
+    kind: path
+    access: write
+    patterns:
+      - '%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup'
+      - '%PROGRAMDATA%\Microsoft\Windows\Start Menu\Programs\Startup'
+    reason: Aegis never adds programs that start with Windows.
+
+  - id: windows-credential-stores
+    kind: path
+    patterns:
+      - '%WINDIR%\System32\config'
+      - '%APPDATA%\Microsoft\Credentials'
+      - '%LOCALAPPDATA%\Microsoft\Credentials'
+      - '%APPDATA%\Microsoft\Protect'
+      - '%LOCALAPPDATA%\Microsoft\Vault'
+      - '%PROGRAMDATA%\Microsoft\Vault'
+    reason: Aegis never touches Windows' saved passwords or the keys that protect them.
+
+  # --- Browsers ------------------------------------------------------------------------
+
+  - id: browser-passwords-and-cookies
+    kind: path
+    patterns:
+      - '%LOCALAPPDATA%\*\Login Data*'
+      - '%LOCALAPPDATA%\*\Cookies*'
+      - '%LOCALAPPDATA%\*\Web Data*'
+      - '%LOCALAPPDATA%\*\Local State'
+      - '%LOCALAPPDATA%\Microsoft\Windows\INetCookies'
+      - '%APPDATA%\*\Login Data*'
+      - '%APPDATA%\*\Cookies*'
+      - '%APPDATA%\*\Web Data*'
+      - '%APPDATA%\*\Local State'
+      - '%APPDATA%\*\Profiles\*\logins*'
+      - '%APPDATA%\*\Profiles\*\key?.db'
+      - '%APPDATA%\*\Profiles\*\signons.sqlite*'
+      - '%APPDATA%\*\Profiles\*\cookies.sqlite*'
+    reason: Aegis never opens a browser's saved passwords, cookies or payment details.
+
+  # --- Keys and secrets ----------------------------------------------------------------
+
+  - id: ssh-keys
+    kind: path
+    patterns:
+      - '%USERPROFILE%\.ssh'
+    reason: Aegis never touches SSH keys.
+
+  - id: gpg-keys
+    kind: path
+    patterns:
+      - '%USERPROFILE%\.gnupg'
+      - '%APPDATA%\gnupg'
+    reason: Aegis never touches GPG keys.
+
+  - id: cloud-credentials
+    kind: path
+    patterns:
+      - '%USERPROFILE%\.aws'
+      - '%USERPROFILE%\.azure'
+      - '%APPDATA%\gcloud'
+      - '%USERPROFILE%\.kube'
+    reason: Aegis never touches cloud account credentials.
+
+  - id: token-files
+    kind: path
+    patterns:
+      - '%USERPROFILE%\.git-credentials'
+      - '%USERPROFILE%\.netrc'
+      - '%USERPROFILE%\_netrc'
+      - '%USERPROFILE%\.pypirc'
+    reason: Aegis never touches files that hold saved login tokens.
+
+  - id: password-managers
+    kind: path
+    patterns:
+      - '%USERPROFILE%\*.kdbx*'
+      - '%USERPROFILE%\*.kdb'
+      - '%LOCALAPPDATA%\1Password'
+      - '%APPDATA%\Bitwarden'
+      # Browser-extension storage: LastPass, Bitwarden, 1Password.
+      - '%LOCALAPPDATA%\*hdokiejnpimakedhajhdlcegeplioahd*'
+      - '%LOCALAPPDATA%\*nngceckbapebfimnlniiiahkandclblb*'
+      - '%LOCALAPPDATA%\*aeblfdkhhhdcdjpifhhbdiojplfjncoa*'
+    reason: Aegis never opens a password manager's vault.
+
+  - id: crypto-wallets
+    kind: path
+    patterns:
+      - '%USERPROFILE%\*wallet.dat'
+      - '%APPDATA%\Bitcoin'
+      - '%APPDATA%\Electrum'
+      - '%APPDATA%\Exodus'
+      - '%APPDATA%\Ethereum\keystore'
+      # MetaMask's extension storage.
+      - '%LOCALAPPDATA%\*nkbihfbeogaeaoehlefnkodbefgpgknn*'
+    reason: Aegis never touches cryptocurrency wallets.
+
+  # --- Aegis itself ----------------------------------------------------------------------
+
+  - id: aegis-data
+    kind: path
+    patterns:
+      - '%AEGIS_DATA%'
+    reason: Aegis never touches its own records, including the audit log and the kill-switch setting.
+
+  - id: aegis-install
+    kind: path
+    access: write
+    patterns:
+      - '%AEGIS_INSTALL%'
+    reason: Aegis never changes its own program files.
+
+  # --- The registry -----------------------------------------------------------------------
+
+  - id: autostart-registry
+    kind: registry
+    access: write
+    patterns:
+      - 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run*'
+      - 'HKCU\Software\Microsoft\Windows\CurrentVersion\Run*'
+      - 'HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run*'
+      - 'HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run'
+      - 'HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run'
+      - 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\Winlogon'
+      - 'HKCU\Software\Microsoft\Windows NT\CurrentVersion\Winlogon'
+      - 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options'
+    reason: Aegis never adds programs that start with Windows.
+
+  - id: security-settings-registry
+    kind: registry
+    access: write
+    patterns:
+      - 'HKLM\Software\Microsoft\Windows Defender'
+      - 'HKLM\Software\Policies\Microsoft\Windows Defender'
+      - 'HKLM\Software\Policies\Microsoft\WindowsFirewall'
+      - 'HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System'
+      - 'HKLM\System\CurrentControlSet\Control\Lsa'
+    reason: Aegis never changes Windows' security settings.
+
+  - id: services-and-drivers-registry
+    kind: registry
+    access: write
+    patterns:
+      - 'HKLM\System\CurrentControlSet\Services'
+      - 'HKLM\System\ControlSet*\Services'
+    reason: Aegis never installs or changes services or drivers.
+
+  - id: account-database-registry
+    kind: registry
+    patterns:
+      - 'HKLM\SAM'
+      - 'HKLM\SECURITY'
+    reason: Aegis never touches Windows' account and password database.
+
+  # --- Commands ------------------------------------------------------------------------------
+
+  - id: disk-wiping
+    kind: command
+    patterns:
+      - '\bformat(\.com)?\s+[a-z]:'
+      - '\bformat-volume\b'
+      - '\b(clear|initialize)-disk\b'
+      - '\bdiskpart\b'
+    reason: Aegis never formats or wipes a disk.
+
+  - id: boot-configuration
+    kind: command
+    patterns:
+      - '\b(bcdedit|bcdboot|bootrec|bootsect)\b'
+    reason: Aegis never changes how Windows starts.
+
+  - id: backup-deletion
+    kind: command
+    patterns:
+      - '\bvssadmin\b.*\b(delete|resize)\b'
+      - '\bwmic\b.*\bshadowcopy\b.*\bdelete\b'
+      - '\bwin32_shadowcopy\b.*\b(delete|remove)'
+      - '\bwbadmin\b.*\bdelete\b'
+    reason: Aegis never deletes backups or restore points.
+
+  - id: defender-tampering
+    kind: command
+    patterns:
+      - '\b(set|add|remove)-mppreference\b'
+      - '\bmpcmdrun\b.*-removedefinitions\b'
+      - '\bsc(\.exe)?\s+(stop|config|delete)\s+windefend\b'
+      - '\b(stop|set)-service\b.*\bwindefend\b'
+    reason: Aegis never changes or turns off Microsoft Defender.
+
+  - id: firewall-tampering
+    kind: command
+    patterns:
+      - '\bnetsh\b.*\b(adv)?firewall\b.*\b(set|add|delete|reset|import)\b'
+      - '\b(new|set|remove|disable|enable|copy|rename)-netfirewall\w*'
+    reason: Aegis never changes the firewall.
+
+  - id: uac-tampering
+    kind: command
+    patterns:
+      - '\b(enablelua|consentpromptbehavior(admin|user)|promptonsecuredesktop|localaccounttokenfilterpolicy)\b'
+    reason: Aegis never changes User Account Control.
+
+  - id: services-and-drivers
+    kind: command
+    patterns:
+      - '\bsc(\.exe)?\s+(create|config|delete)\b'
+      - '\b(new|remove)-service\b'
+      - '\bpnputil\b.*(/add-driver|/delete-driver|/install)'
+      - '\bdism\b.*/add-driver'
+      - '\binstallutil\b'
+    reason: Aegis never installs or changes services or drivers.
+
+  - id: log-clearing
+    kind: command
+    patterns:
+      - '\bwevtutil(\.exe)?\s+(cl|clear-log|sl|set-log)\b'
+      - '\b(clear|remove|limit)-eventlog\b'
+      - '\bauditpol\b.*(/clear|/remove|disable)'
+    reason: Aegis never clears or turns off the logs that record what happened.
+
+  - id: credential-theft
+    kind: command
+    patterns:
+      - '\b(cmdkey|vaultcmd)\b'
+      - '\bget-storedcredential\b'
+      - '\b(mimikatz|sekurlsa|lsadump)\b'
+      - '\breg(\.exe)?\s+(save|export)\s+(hklm|hkey_local_machine)\\(sam|security|system)\b'
+      - '\blsass\b.*\b(minidump|dump)\b'
+      - '\b(minidump|procdump)\b.*\blsass\b'
+    reason: Aegis never reads saved passwords or the keys that protect them.
+
+  - id: autostart-commands
+    kind: command
+    patterns:
+      - '\b(reg(\.exe)?\s+(add|import|delete|copy|restore|load)|(new|set|remove|copy|move|rename)-item(property)?)\b.*\\currentversion\\(run|policies\\explorer\\run)'
+      - '\b(reg(\.exe)?\s+(add|import|delete|copy|restore|load)|(new|set|remove|copy|move|rename)-item(property)?)\b.*\\(winlogon|image file execution options)\b'
+    reason: Aegis never adds programs that start with Windows.
+
+  - id: hidden-commands
+    kind: command
+    patterns:
+      - '\b(powershell|pwsh)(\.exe)?\b.*\s[-/]e(c|n(c(o(d(e(d(c(o(m(m(a(n(d)?)?)?)?)?)?)?)?)?)?)?)?)?\s'
+    reason: Aegis never runs a command it cannot read.
