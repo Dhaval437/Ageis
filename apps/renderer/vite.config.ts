@@ -15,6 +15,13 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    // Two pages: the main window, and the OverlayHUD window (P3-13).
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        hud: fileURLToPath(new URL('./hud.html', import.meta.url)),
+      },
+    },
     sourcemap: true,
     // A small font subset would otherwise be inlined as a `data:` URI, which the
     // CSP's `default-src 'self'` refuses. Fonts are always emitted as files.

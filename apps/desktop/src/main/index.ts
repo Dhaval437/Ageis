@@ -8,11 +8,12 @@
  * Landed so far: window, frameless shell for the custom titlebar, tray, the
  * single-instance lock (P0-02), the preload bridge (P0-04), the core
  * supervisor (P0-07), the event stream forwarded to the renderer (P0-09), the
- * kill switch (P3-06) and the watchdog (P3-07).
+ * kill switch (P3-06), the watchdog (P3-07) and the OverlayHUD (P3-13).
  */
 
 import { app, globalShortcut } from 'electron';
 import type { BrowserWindow } from 'electron';
+import type { BridgeResult } from '@aegis/shared';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createMainWindow } from './window.js';
@@ -30,6 +31,7 @@ import { registerBridgeIpc, type BridgeIpc } from './ipc.js';
 import { createCoreStream, type CoreAvailability, type CoreStream } from './core-stream.js';
 import { createTaskActivity } from './task-activity.js';
 import { createWatchdog, type Watchdog, type WatchdogReport } from './watchdog.js';
+import { createOverlay, type Overlay } from './overlay.js';
 import {
   createSupervisor,
   resolveCoreLaunch,
@@ -47,6 +49,7 @@ let supervisor: Supervisor | null = null;
 let coreStream: CoreStream | null = null;
 let killSwitch: KillSwitch | null = null;
 let watchdog: Watchdog | null = null;
+let overlay: Overlay | null = null;
 /** Whether a task is running, learnt from the stream MAIN forwards (P3-07). */
 const taskActivity = createTaskActivity();
 let hotkeys: KillSwitchHotkeys | null = null;
@@ -147,6 +150,8 @@ function bootstrap(): void {
     // First, so a core being stopped on purpose is never mistaken for a hung one.
     watchdog?.stop();
     watchdog = null;
+    overlay?.dispose();
+    overlay = null;
     tray?.destroy();
     tray = null;
     coreStream?.dispose();
@@ -170,6 +175,7 @@ function bootstrap(): void {
         deliver: (message) => {
           taskActivity.observe(message);
           bridge?.send.coreEvent(message);
+          overlay?.send(message);
         },
       });
       supervisor = createCoreSupervisor();
@@ -191,6 +197,24 @@ function bootstrap(): void {
         onReport: logWatchdogReport,
       });
       watchdog.start();
+
+      // `UI.md § 6`. Created on first show; its own narrow preload and channels.
+      overlay = createOverlay({
+        entry: {
+          isPackaged: app.isPackaged,
+          devServerUrl: process.env['AEGIS_RENDERER_URL'],
+          appPath: app.getAppPath(),
+        },
+        taskRunning: taskActivity.running,
+        stop: () => {
+          void killSwitch?.trigger();
+        },
+        showMain: showMainWindow,
+        deny: denyApproval,
+        onLoad: () => {
+          coreStream?.restart();
+        },
+      });
       hotkeys = createHotkeyService({
         registry: globalShortcut,
         store: createFileHotkeyStore(hotkeysFile(process.env, homedir())),
@@ -205,10 +229,12 @@ function bootstrap(): void {
 
       bridge = registerBridgeIpc({
         getWindow: () => mainWindow,
-        // The OverlayHUD window is P3-13 and updates are P7-04. Until each
-        // lands its namespace answers `unavailable` rather than silently doing
-        // nothing.
-        setOverlay: null,
+        // The OverlayHUD (P3-13). Updates are P7-04, and until then that
+        // namespace answers `unavailable` rather than silently doing nothing.
+        setOverlay: (visible: boolean): Promise<void> => {
+          overlay?.setVisible(visible);
+          return Promise.resolve();
+        },
         rest: {
           // Null while the core is down, which is how the renderer learns to
           // show "Reconnecting…" instead of a request that never returns.
@@ -299,9 +325,32 @@ function logKillReport(report: KillReport): void {
   }
 }
 
+/**
+ * The HUD's *Deny* (P3-13): `POST /v1/approvals/{id}` with `deny`, and nothing else —
+ * the HUD cannot allow. A 404 means the question was already closed, which is fine.
+ */
+async function denyApproval(approvalId: number): Promise<BridgeResult<null>> {
+  const gateway = supervisor?.gateway() ?? null;
+  if (gateway === null) {
+    return { ok: false, error: { code: 'unavailable', message: 'The engine is not running.' } };
+  }
+  try {
+    const response = await gateway.request({
+      method: 'POST',
+      path: `/approvals/${String(approvalId)}`,
+      body: { choice: 'deny' },
+    });
+    if (response.status === 200 || response.status === 404) return { ok: true, value: null };
+    return { ok: false, error: { code: 'failed', message: 'The engine refused the answer.' } };
+  } catch {
+    return { ok: false, error: { code: 'failed', message: 'The engine did not answer.' } };
+  }
+}
+
 /** One line per kill; the numbers are all MAIN has, and all a bug report needs. */
 function logWatchdogReport(report: WatchdogReport): void {
-  const silent = report.silentMs === null ? 'never answered' : `silent ${report.silentMs.toFixed(0)} ms`;
+  const silent =
+    report.silentMs === null ? 'never answered' : `silent ${report.silentMs.toFixed(0)} ms`;
   console.error(
     `[main] watchdog: the core missed ${String(report.misses)} pings during a task (${silent}); ${report.outcome}`,
   );

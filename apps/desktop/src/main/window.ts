@@ -70,7 +70,7 @@ export function createMainWindow(entryInput: RendererEntryInput): BrowserWindow 
  * belongs to the explicit `system` namespace on the preload bridge (P0-04), not
  * to whatever a page decides to do.
  */
-function hardenNavigation(window: BrowserWindow): void {
+export function hardenNavigation(window: BrowserWindow): void {
   window.webContents.setWindowOpenHandler(({ url }) => {
     console.warn(`[main] blocked window.open to ${url}`);
     return { action: 'deny' };

@@ -90,8 +90,8 @@ aegis/
 ├─ package.json  pnpm-workspace.yaml  turbo.json
 ├─ apps/
 │  ├─ desktop/                    # Electron MAIN + preload
-│  │  ├─ src/main/                # index.ts, supervisor.ts, hotkeys.ts, kill-switch.ts, watchdog.ts, task-activity.ts, updater.ts, ipc.ts
-│  │  ├─ src/preload/             # bridge.ts  (the ONLY surface exposed to the renderer)
+│  │  ├─ src/main/                # index.ts, supervisor.ts, hotkeys.ts, kill-switch.ts, watchdog.ts, task-activity.ts, overlay.ts, overlay-policy.ts, hud-channels.ts, updater.ts, ipc.ts
+│  │  ├─ src/preload/             # bridge.cts (the main window's surface), hud.cts (the OverlayHUD's, far narrower)
 │  │  └─ electron-builder.yml
 │  └─ renderer/                   # React app
 │     ├─ src/screens/  src/components/  src/stores/  src/lib/
@@ -496,6 +496,14 @@ window.aegis = {
 ```
 
 Nothing else. Adding a function here is a security review item (`REVIEW.md § 5`).
+
+The OverlayHUD window (P3-13) does **not** get this surface. It has its own preload, `preload/hud.cts`, and exactly four members:
+
+```ts
+window.aegisHud = { subscribe, stop, showMain, deny }   // AegisHudBridge
+```
+
+`stop` presses the kill switch, `deny(approvalId)` denies one approval (there is no `allow` — allowing happens only in the dialog, behind its input guard), `showMain` brings the main window forward, and `subscribe` is the same stream. Its channels (`main/hud-channels.ts`) answer only the HUD's `webContents`, the main window's refuse it, and `tests/hud-bridge.test.ts` holds the preload to that list and those four members.
 
 The typed contract lives in `packages/shared/src/bridge.ts` (`AegisBridge`) — the
 one hand-written TS type allowed by the §4 rule, because none of it mirrors a

@@ -203,6 +203,13 @@ Rules:
 - `⌃` expands to a 3-line recent-steps strip; expands to the main window on double-click.
 - **Never covers the mouse cursor's current position** — it auto-nudges to the opposite screen edge if the cursor enters its rect.
 
+*As built (P3-13)* — `main/overlay.ts` + `overlay-policy.ts`, page `hud.html` / `components/OverlayHUD.tsx`:
+- The two rules above conflict — a HUD that always flees the cursor can never be clicked — and invariant 1 resolves it: **while a task runs, every cursor movement is the agent's** (a human touching the mouse preempts it). So while running the HUD is fully click-through and jumps to the other edge of its screen when the cursor comes within 24 px; paused, waiting or idle it takes clicks and stays put. The person who reaches for Stop pauses the agent on the way, and finds the HUD where they aimed.
+- It is **excluded from screen capture** (`setContentProtection` → `WDA_EXCLUDEFROMCAPTURE`): verified on this machine, the core's own capture of the HUD's rectangle shows the window behind it, not the HUD and not a black box.
+- Frameless, transparent, always on top at `screen-saver` level, **never focusable** and shown without activation, so it cannot take keystrokes from the app the agent drives. 420×64, top-centre of the primary work area, draggable by its body.
+- It shows the one-line status (connecting / offline / waiting for you / the current action / paused / stopped / ready) with amber for a question or a pause and red for a stop or an offline engine; the approval state has **Deny** and **Review** and never Allow; **■ Stop** is the kill switch; `⌃` and a double-click open the main window. There is no ⏸ button: touching the mouse *is* pause, and Resume is `P3-14`. The recent-steps strip waits for `P4-11`'s steps.
+- Nothing shows it automatically yet: `window.setOverlay(true)` does, and deciding when (a task starts, the main window hides) is `P3-14`'s.
+
 ---
 
 ## 7. The preemption experience ("I take over")

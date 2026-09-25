@@ -145,6 +145,11 @@
     -webkit-font-smoothing: antialiased;
   }
 
+  /* The OverlayHUD's window is transparent; only its rounded card is painted (P3-13). */
+  html.hud body {
+    background-color: transparent;
+  }
+
   /* `UI.md § 10`: 2px accent ring, 2px offset, never removed. */
   :focus-visible {
     outline: 2px solid var(--accent);

@@ -20,6 +20,7 @@ measures Windows and the machine's load as much as this code.
 
 from __future__ import annotations
 
+import ctypes
 import io
 import os
 import random
@@ -743,3 +744,44 @@ def test_a_destroyed_live_window_is_refused(red_window: SolidWindow) -> None:
     red_window.hwnd = 0
     with pytest.raises(CaptureError, match="no longer exists"):
         capture(WindowTarget(hwnd))
+
+
+# --------------------------------------------------------------------------- #
+# Live: a window excluded from capture is not in the frame (P3-13)
+# --------------------------------------------------------------------------- #
+
+#: `SetWindowDisplayAffinity` values. `EXCLUDEFROMCAPTURE` needs Windows 10 2004+; it is
+#: what Electron's `setContentProtection(true)` asks for, for the OverlayHUD.
+WDA_NONE = 0x00
+WDA_EXCLUDEFROMCAPTURE = 0x11
+
+_affinity_user32 = ctypes.WinDLL("user32", use_last_error=True)
+_affinity_user32.SetWindowDisplayAffinity.argtypes = (wintypes.HWND, wintypes.DWORD)
+_affinity_user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
+
+
+def _red_share(window: SolidWindow) -> float:
+    """The share of a grid of sample points in the window's rectangle that are red."""
+    image = capture(RegionTarget(window.rect))._to_image()
+    points = [(x, y) for x in range(5, image.width, 25) for y in range(5, image.height, 25)]
+    return sum(image.getpixel(p) == RED for p in points) / len(points)
+
+
+def test_a_window_excluded_from_capture_is_not_in_the_frame(red_window: SolidWindow) -> None:
+    """The OverlayHUD floats over the apps the agent drives, so it must not be in the
+    screenshots the model is shown (P2-02's note, P3-13). The capture here is the
+    core's own (`mss`, a screen `BitBlt`), and the control half proves the window was
+    really there to be seen: the same window, affinity cleared, is captured.
+    """
+    if not _affinity_user32.SetWindowDisplayAffinity(red_window.hwnd, WDA_EXCLUDEFROMCAPTURE):
+        pytest.skip("WDA_EXCLUDEFROMCAPTURE needs Windows 10 2004 or later")
+    try:
+        red_window.pump()
+        assert _red_share(red_window) < 0.05
+    finally:
+        _affinity_user32.SetWindowDisplayAffinity(red_window.hwnd, WDA_NONE)
+    red_window.pump()
+    deadline = time.monotonic() + 2.0
+    while _red_share(red_window) < 0.95 and time.monotonic() < deadline:
+        red_window.pump()
+    assert _red_share(red_window) >= 0.95

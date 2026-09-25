@@ -190,3 +190,26 @@ export interface AegisBridge {
     onDeepLink(listener: (url: string) => void): Unsubscribe;
   };
 }
+
+/**
+ * `window.aegisHud` — the OverlayHUD window's whole surface (P3-13), from its own
+ * preload (`preload/hud.cts`). **Deliberately far narrower than `AegisBridge`.**
+ *
+ * The HUD is a second renderer that shows the same untrusted text the main window
+ * does, and it sits over the apps the agent is driving. It gets exactly what it
+ * needs and nothing a compromised page could widen: no generic core request, no
+ * files, no hotkeys. It can stop the agent and it can *deny* a pending approval —
+ * both of which only ever make Aegis do less — and it can bring the main window
+ * forward. It can never allow anything: an approval is allowed only in the dialog,
+ * behind its input guard.
+ */
+export interface AegisHudBridge {
+  /** The same stream the main window gets (`ARCHITECTURE.md § 9.2`). */
+  subscribe(listener: (message: CoreStreamMessage) => void): Unsubscribe;
+  /** Presses the kill switch (`P3-06`): the same path as the hotkey and the tray. */
+  stop(): void;
+  /** Brings the main window forward — the HUD's expand control. */
+  showMain(): void;
+  /** Denies one pending approval. There is no `allow`. */
+  deny(approvalId: number): Promise<BridgeResult<null>>;
+}

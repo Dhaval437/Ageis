@@ -40,3 +40,13 @@ export function resolveRendererEntry(input: RendererEntryInput): RendererEntry {
   // Unpackaged with no dev server: load the renderer's own `vite build` output.
   return { kind: 'file', value: resolve(input.appPath, '..', 'renderer', 'dist', 'index.html') };
 }
+
+/**
+ * The OverlayHUD's page (P3-13): `hud.html` beside `index.html`, from the same
+ * origin, under the same rules — a packaged build never loads it from a dev server.
+ */
+export function resolveHudEntry(input: RendererEntryInput): RendererEntry {
+  const main = resolveRendererEntry(input);
+  if (main.kind === 'url') return { kind: 'url', value: new URL('hud.html', main.value).href };
+  return { kind: 'file', value: join(main.value, '..', 'hud.html') };
+}
