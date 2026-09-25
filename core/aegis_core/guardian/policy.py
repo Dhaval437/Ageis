@@ -95,11 +95,40 @@ class Verdict:
     signals: frozenset[Signal] = frozenset()
 
 
+class GuardianDeniedError(Exception):
+    """`check_target()` refused. The message is for the user and quotes no target."""
+
+
 class Guardian:
     """The policy engine. One per core; `evaluate()` is pure given its inputs."""
 
     def __init__(self, rules: Rules) -> None:
         self._rules = rules
+
+    def check_target(self, target: Target, ctx: TaskContext) -> str:
+        """The re-check a tool makes **immediately before** it acts (`REVIEW.md § 5`).
+
+        `evaluate()` ran when the call was proposed; since then an approval may have
+        waited half a minute and the disk may have changed under it — a folder swapped
+        for a junction is the classic. So the tool asks again about each target it is
+        about to touch and acts on the canonical form this returns, never on the string
+        it was given. Refused: anything FORBIDDEN, anything with no canonical form, and
+        a write outside the scope. A read outside the scope is not refused here: it was
+        either inside it or approved when `evaluate()` asked.
+
+        Raises `GuardianDeniedError`, whose message is a sentence for the user.
+        """
+        canonical = canonical_target(target)
+        if canonical is None:
+            raise GuardianDeniedError(
+                "Aegis could not check where this action points, so it stopped."
+            )
+        entry = self._rules.forbidden_match(target)
+        if entry is not None:
+            raise GuardianDeniedError(entry.reason)
+        if target.kind == "path" and target.access == "write" and not ctx.in_scope(canonical):
+            raise GuardianDeniedError("This would change something outside the task's scope.")
+        return canonical
 
     def evaluate(
         self, tool: GuardedTool, params: Mapping[str, JsonValue], ctx: TaskContext

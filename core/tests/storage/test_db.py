@@ -39,6 +39,7 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "id", "task_id", "ts", "day", "role", "provider_id", "model",
         "input_tokens", "output_tokens", "cost_cents",
     ],
+    "scopes": ["id", "name", "folders_json", "apps_json", "created_at", "updated_at"],
 }  # fmt: skip
 
 NOW = "2026-09-14T12:00:00.000Z"

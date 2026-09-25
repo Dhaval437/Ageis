@@ -26,9 +26,11 @@ rather than writing a second one beside it.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import ntpath
 import os
 import re
+import socket
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -40,6 +42,7 @@ from typing import Annotated, Final, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
+from aegis_core.guardian import win32
 from aegis_core.storage.db import default_data_dir
 
 #: SHA-256 of `rules.yaml` with CRLF read as LF, so a Windows checkout's line endings
@@ -175,16 +178,116 @@ def _win32_component(part: str) -> str:
     return stripped if stripped else part
 
 
+#: How many links `_reaches_network()` follows before calling a chain unresolvable.
+#: Windows itself gives up at 63; a real chain is one or two.
+MAX_LINK_HOPS: Final = 32
+
+
+def _is_device(path: str) -> bool:
+    r"""`\\.\…` (devices, pipes, `\\.\C:` raw volumes) or a leftover `\\?\…` namespace."""
+    return path.startswith(("\\\\.\\", "\\\\?\\"))
+
+
+def _is_local_host(host: str) -> bool:
+    """Whether a UNC host names this machine, by any spelling that needs no DNS."""
+    name = host.strip("[]").rstrip(".").lower()
+    if name in {"", ".", "?", "??", "localhost"} or name.endswith(
+        (".localhost", ".ipv6-literal.net")
+    ):
+        return True
+    own = {os.environ.get("COMPUTERNAME", "").lower(), socket.gethostname().lower()}
+    if name in own - {""}:
+        return True
+    try:
+        # `inet_aton` reads every legacy spelling Windows does: 127.1, 0x7f.1, 2130706433.
+        first = socket.inet_aton(name)[0]
+        return first in (0, 127)
+    except OSError:
+        pass
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_unspecified
+
+
+def _usable_share(path: str) -> bool:
+    r"""A `\\host\share\…` path the Guardian can judge by its spelling alone.
+
+    Not an admin share (`C$`, `ADMIN$`) and not this machine by another name
+    (`\\localhost\C$\Windows` *is* `C:\Windows`): either would reach a local place
+    under a spelling no rule is written against. A share on another host is fine —
+    FORBIDDEN places are local, and scope decides the rest.
+    """
+    parts = path[2:].split("\\")
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        return False
+    host, share = parts[0], parts[1]
+    return not share.endswith("$") and not _is_local_host(host.split("@", 1)[0])
+
+
+def _is_remote_drive(path: str) -> bool:
+    drive = ntpath.splitdrive(path)[0]
+    return len(drive) == 2 and win32.drive_type(drive + "\\") == win32.DRIVE_REMOTE
+
+
+def _reaches_network(path: str, hops: int = 0) -> bool:
+    r"""Whether resolving `path` would pass through a link to a network location.
+
+    `realpath` follows symlinks by opening them, so a symlink to `\\host\share` makes
+    it open an SMB session — measured here: 42 s to time out against an unroutable
+    host, and then it returned the *unresolved* path. So each existing component is
+    `lstat`ed (which does not follow) and each link's target read with `readlink`
+    (which reads the reparse data, not the target), and a chain that reaches a UNC
+    path, a mapped network drive or a device — or cannot be read, or is too long — is
+    reported, so the caller refuses it before `realpath` ever runs.
+    """
+    if hops > MAX_LINK_HOPS or _is_remote_drive(path):
+        return True
+    drive, rest = ntpath.splitdrive(path)
+    parts = [part for part in rest.split("\\") if part]
+    current = drive + "\\"
+    for index, part in enumerate(parts):
+        current = ntpath.join(current, part)
+        try:
+            info = os.lstat(current)
+        except OSError:
+            return False  # nothing exists from here on, so there is nothing to follow
+        is_reparse = getattr(info, "st_file_attributes", 0) & win32.FILE_ATTRIBUTE_REPARSE_POINT
+        is_link = getattr(info, "st_reparse_tag", 0) & win32.REPARSE_TAG_NAME_SURROGATE
+        if not (is_reparse and is_link):
+            continue
+        try:
+            target = str(Path(current).readlink())
+        except (OSError, ValueError):
+            return True
+        if target.lower().startswith("\\\\?\\volume{"):
+            return False  # a volume mounted in a folder: local, and `realpath` resolves it
+        target = _strip_verbatim(target)
+        if target.startswith("\\\\"):
+            return True
+        if not ntpath.isabs(target):
+            target = ntpath.join(ntpath.dirname(current), target)
+        return _reaches_network(ntpath.abspath(ntpath.join(target, *parts[index + 1 :])), hops + 1)
+    return False
+
+
 def canonical_path(value: str) -> str | None:
     r"""The one spelling of a path that matching compares, or `None` if it has none.
 
-    `None` for an empty, relative, over-long or NUL-containing path: those cannot be
-    resolved without guessing, and a guess is how a FORBIDDEN place gets reached by a
-    different name. Otherwise: verbatim prefix removed, `/` read as `\`, `..` resolved,
-    symlinks and junctions followed as far as the path exists, each component read the
-    way Win32 reads it, an alternate data stream (`file:stream`) reduced to its file,
-    and the case folded. A UNC or device path (`\\host\share`) is never opened, so a
-    link *inside* a share is not followed.
+    `None` for anything that cannot be judged without guessing — a guess is how a
+    FORBIDDEN place gets reached by a different name: an empty, relative, over-long or
+    NUL-containing path; the device namespace (`\\.\C:\…`, `\\.\PhysicalDrive0`, a
+    pipe, a DOS device such as `NUL`); an admin share or this machine under another
+    name (`\\localhost\C$\…`); and a local path that reaches the network through a link.
+
+    Otherwise: verbatim prefix removed, `/` read as `\`, `..` resolved, symlinks,
+    junctions, `subst` drives and 8.3 names followed as far as the path exists, each
+    component read the way Win32 reads it, an alternate data stream (`file:stream`)
+    reduced to its file, and the case folded. A path on another machine — UNC or a
+    mapped network drive — is canonicalised by its spelling and **never opened**:
+    resolving it would open an SMB session to a host the model named, which costs a
+    timeout and can hand that host the user's NTLM hash.
     """
     if not value or "\x00" in value or len(value) > MAX_PATH_CHARS:
         return None
@@ -193,11 +296,18 @@ def canonical_path(value: str) -> str | None:
         return None
     try:
         path = ntpath.abspath(path)
-        # Never touch a network path: resolving `\\host\share` opens an SMB session to
-        # a host the *model* named, which costs a timeout and can hand that host the
-        # user's NTLM hash. UNC and device paths are canonicalised lexically only.
-        if not path.startswith("\\\\"):
+        if _is_device(path):
+            # `\\.\C:\…`, a pipe, and `C:\x\NUL`, which `abspath` turns into `\\.\nul`.
+            return None
+        if path.startswith("\\\\"):
+            if not _usable_share(path):
+                return None
+        elif not _is_remote_drive(path):
+            if _reaches_network(path):
+                return None
             path = _strip_verbatim(os.path.realpath(path))
+            if path.startswith("\\\\"):
+                return None  # a link resolved off the machine after all
     except (OSError, ValueError):
         return None
     drive, rest = ntpath.splitdrive(path)

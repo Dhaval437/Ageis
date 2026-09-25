@@ -104,9 +104,9 @@ aegis/
 │  │  ├─ tools/                   # registry.py + one module per tool family
 │  │  ├─ perception/              # display.py (+ win32.py), screen.py, uia_tree.py, redact.py, prune.py, mark.py, ocr.py, grounding.py, phash.py
 │  │  ├─ actuation/               # input.py (SendInput), window.py, preempt.py, killswitch.py
-│  │  ├─ guardian/                # policy.py, rules.yaml, rules.py, risk.py, approvals.py
+│  │  ├─ guardian/                # policy.py, rules.yaml, rules.py, risk.py, scope.py, win32.py, approvals.py
 │  │  ├─ recovery/                # journal.py, undo.py, snapshot.py
-│  │  ├─ storage/                 # db.py, migrations/, audit.py, vault.py, usage.py, settings.py
+│  │  ├─ storage/                 # db.py, migrations/, audit.py, vault.py, usage.py, settings.py, scopes.py
 │  │  └─ telemetry/               # local metrics only; OFF by default
 │  ├─ tests/
 │  └─ pyproject.toml
@@ -295,6 +295,7 @@ facts(id, scope, key, value, source_task_id, created_at)           -- durable ag
 journal(id, task_id, step_id, op, forward_json, undo_json, applied, created_at, undone_at)  -- see RECOVERY.md
 settings(key, value_json)
 usage(id, task_id, ts, day, role, provider_id, model, input_tokens, output_tokens, cost_cents)
+scopes(id, name, folders_json, apps_json, created_at, updated_at)   -- P3-10, m0003
 ```
 
 - Implemented in `storage/migrations/m0001_initial.py` (P0-10): `STRICT` tables, UTC ISO-8601 `TEXT` timestamps, 0/1 `INTEGER` booleans, `json_valid` on every `*_json` column, `CHECK`s on status/risk/decision/choice, `cost_cents` is `REAL`, `audit` append-only by trigger. Every connection gets WAL + `synchronous=FULL` + foreign keys (`storage/db.py`). Schema version = `PRAGMA user_version`; the core creates or migrates the DB before its handshake line.
@@ -337,6 +338,8 @@ def evaluate(tool: Tool, params: dict, ctx: TaskContext) -> Verdict:
 ### 8.2 Scoping: the agent has a *workspace*, not the whole disk
 
 At task start the user picks (or reuses) a **scope**: a set of folders plus a set of apps. `fs` tools resolve every path (after `realpath`, symlink-following, and `..` normalisation) and reject anything outside scope. Reading outside scope is `confirm`; writing outside scope is `deny` unless the user widens the scope, which is a deliberate UI action. This turns "the AI deleted my files" from a possibility into a policy violation that cannot compile.
+
+*How (P3-10).* `guardian/scope.py`: a `Scope` is a name, canonical folders and app executable names (`excel.exe`); `make_scope()` refuses a drive or share root, a folder that does not exist, and one a FORBIDDEN entry covers for any access, collapses nesting, and caps both lists at 32. `Scope.contains()` compares canonical paths on a whole-component boundary and is what `TaskContext.in_scope` is. Scopes persist in the `scopes` table (`storage/scopes.py`, which only remembers), and `load_scope()` re-validates every stored folder, so a row can only ever come back **narrower** than it was saved. `Guardian.check_target()` is the re-check a tool makes **immediately before** acting: it canonicalises again, refuses FORBIDDEN, uncheckable and write-outside-scope, and returns the canonical path the tool must act on. The normaliser (`rules.canonical_path()`) now also refuses the **device namespace** (`\\.\C:\…`, pipes, `NUL`), **admin shares** and **this machine under any name** (`\\localhost\C$`, `127.1`, `2130706433`, its own hostname), and a local path whose **links lead to the network** — found by `lstat` and `readlink`, never by opening, because `realpath` on a symlink to a share hung 42 s here. `subst` drives are resolved; mapped network drives are read lexically and never opened. Who may *create* a scope — only folders the user picked in the OS dialog, since the renderer's core passthrough is generic — is `P3-17`.
 
 ### 8.3 The user always wins (preemption)
 
