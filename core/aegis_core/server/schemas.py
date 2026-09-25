@@ -323,3 +323,63 @@ class SpendResponse(BaseModel):
 
     day: SpendTotals
     limits: BudgetLimitsSpec
+
+
+# ---------------------------------------------------------------------------
+# Approvals and always-allow rules (`P3-11`, `ARCHITECTURE.md § 8.1`, `UI.md § 5`)
+# ---------------------------------------------------------------------------
+
+ApprovalChoice = Literal["allow", "deny", "allow_always"]
+"""What the person answered an approval with: `approvals.choice`."""
+
+ApprovalOutcomeSource = Literal["user", "timeout", "stopped"]
+"""Who decided: the person, the auto-deny timer, or a stop (kill switch, task ended)."""
+
+RuleKind = Literal["exact", "tool_in_folder", "tool_for_task"]
+"""An always-allow rule's scope: *this exact action*, *this tool in this folder*, or
+*this tool for this task only* (`UI.md § 5`). There is no "everything, forever"."""
+
+
+class ApprovalDecision(BaseModel):
+    """`POST /v1/approvals/{id}`: the person's answer.
+
+    `rule` is required with `allow_always` and refused with anything else. It names a
+    *kind* only: which folder or which task a rule covers is taken from the call being
+    approved, never from the request, so the renderer cannot name a path.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    choice: ApprovalChoice
+    rule: RuleKind | None = None
+
+
+class ApprovalResolved(BaseModel):
+    """The core's answer to `POST /v1/approvals/{id}`."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    approval_id: int
+    choice: ApprovalChoice
+    rule_id: int | None = Field(description="The always-allow rule created, if one was.")
+
+
+class AllowRuleInfo(BaseModel):
+    """One always-allow rule, as the Rules screen lists it."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: int
+    kind: RuleKind
+    tool: str
+    folder: str | None = Field(description="Canonical folder, for `tool_in_folder`.")
+    task_id: str | None = Field(description="The task, for `tool_for_task`.")
+    created_at: str
+
+
+class AllowRuleList(BaseModel):
+    """`GET /v1/rules`: every always-allow rule, newest first. Each is revocable."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rules: list[AllowRuleInfo]

@@ -238,9 +238,7 @@ def by_id(catalog: ModelCatalog, provider_id: str) -> ProviderCatalog:
 
 async def test_the_catalogue_lists_every_provider(service: ModelService) -> None:
     catalog = await service.catalog()
-    assert [card.provider_id for card in catalog.providers] == [
-        card.provider_id for card in CARDS
-    ]
+    assert [card.provider_id for card in catalog.providers] == [card.provider_id for card in CARDS]
 
 
 async def test_the_catalogue_reaches_no_vendor(

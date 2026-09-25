@@ -12,14 +12,15 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
-from typing import Final
+from typing import Annotated, Final, cast
 
 import anyio
 from anyio.abc import TaskGroup
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Path, Request, WebSocket, WebSocketDisconnect
 
 from aegis_core import __version__
 from aegis_core.actuation.killswitch import KillSwitch
+from aegis_core.guardian.approvals import ApprovalBroker, ApprovalError, ApprovalNotFoundError
 from aegis_core.models.schemas import ProviderId
 from aegis_core.models.service import ModelService
 from aegis_core.server.hub import (
@@ -32,11 +33,16 @@ from aegis_core.server.hub import (
     Subscription,
 )
 from aegis_core.server.schemas import (
+    AllowRuleInfo,
+    AllowRuleList,
+    ApprovalDecision,
+    ApprovalResolved,
     HealthResponse,
     KeyRequest,
     KeyResponse,
     KillResponse,
     ModelCatalog,
+    RuleKind,
     SettingsRequest,
     SettingsResponse,
     SpendResponse,
@@ -76,12 +82,87 @@ async def kill(request: Request) -> KillResponse:
     """
     switch: KillSwitch = request.app.state.kill_switch
     report = switch.engage()
+    # A stop is also an answer to every open question: no dialog left on screen may
+    # approve an action for an agent that has just been stopped (`P3-11`).
+    request.app.state.approvals.deny_all("stopped")
     return KillResponse(
         engaged=True,
         released_keys=report.released_keys,
         released_buttons=report.released_buttons,
         release_failures=report.release_failures,
     )
+
+
+# ---------------------------------------------------------------------------
+# Approvals and always-allow rules (`P3-11`, `UI.md § 5`)
+# ---------------------------------------------------------------------------
+
+
+def _broker(request: Request) -> ApprovalBroker:
+    broker: ApprovalBroker = request.app.state.approvals
+    return broker
+
+
+@router.post("/approvals/{approval_id}", response_model=ApprovalResolved)
+async def answer_approval(
+    request: Request, approval_id: Annotated[int, Path(ge=1)], body: ApprovalDecision
+) -> ApprovalResolved:
+    """The person's answer to an approval dialog.
+
+    404 when there is nothing to answer — already answered, or already denied by its
+    timer — so a late click can never approve anything. 400, with a sentence, for an
+    answer that cannot be accepted (an *Allow always* the call is not eligible for).
+    """
+    try:
+        resolution = _broker(request).resolve(approval_id, body.choice, body.rule)
+    except ApprovalNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ApprovalError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return ApprovalResolved(
+        approval_id=approval_id,
+        choice=resolution.choice,
+        rule_id=None if resolution.rule is None else resolution.rule.id,
+    )
+
+
+@router.get("/rules", response_model=AllowRuleList)
+async def list_rules(request: Request) -> AllowRuleList:
+    """Every always-allow rule, for the Rules screen, where each can be revoked."""
+    store = _broker(request).rule_store
+    if store is None:
+        return AllowRuleList(rules=[])
+    try:
+        stored = store.list()
+    except StorageError as error:
+        raise HTTPException(status_code=503, detail="The rules cannot be read.") from error
+    return AllowRuleList(
+        rules=[
+            AllowRuleInfo(
+                id=rule.id,
+                kind=cast("RuleKind", rule.kind),
+                tool=rule.tool,
+                folder=rule.folder,
+                task_id=rule.task_id,
+                created_at=rule.created_at,
+            )
+            for rule in stored
+            if rule.kind in ("exact", "tool_in_folder", "tool_for_task")
+        ]
+    )
+
+
+@router.delete("/rules/{rule_id}", response_model=AllowRuleList)
+async def revoke_rule(request: Request, rule_id: Annotated[int, Path(ge=1)]) -> AllowRuleList:
+    """Revoke one rule. Answers with the rules that remain; an unknown id is a 404."""
+    store = _broker(request).rule_store
+    try:
+        removed = store is not None and store.delete(rule_id)
+    except StorageError as error:
+        raise HTTPException(status_code=503, detail="The rule could not be removed.") from error
+    if not removed:
+        raise HTTPException(status_code=404, detail="There is no such rule.")
+    return await list_rules(request)
 
 
 # ---------------------------------------------------------------------------

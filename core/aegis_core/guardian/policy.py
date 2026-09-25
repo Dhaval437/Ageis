@@ -17,12 +17,13 @@ The order, first match wins for a `deny`:
    A call that echoes text from an observation is at least `confirm` whatever its tier
    (`§ 8.6`), because that is the shape of a prompt injection.
 
-`§ 8.1`'s sketch has user always-allow rules as a step between scope and tier. They are
-not here: under every autonomy level the only tier `confirm` left for them to relax is
-`DANGEROUS`, which invariant 4 says they may not, so what they *should* relax (a scope
-read, an escalation of a `CAUTION` tool) is the design of `P3-11`'s `allow_always` —
-and it must then run after the signals, never before, or an "always allow" would wave
-a prompt-injected call through.
+4. **Always-allow rules** (`allow_rules.py`, `P3-11`) may turn a `confirm` into an
+   `allow` — and only that: under `trusted` autonomy (`§ 10`), for an effective tier of
+   `SAFE` or `CAUTION` (never `DANGEROUS`, invariant 4), and never over the `confirm`
+   that screen-echoed text forces. `§ 8.1`'s sketch has this step before the tier; it
+   runs **last** here, because a rule checked before the signals would let an "always
+   allow" wave a prompt-injected call through. In practice what it relaxes is a read
+   outside the scope; everything else a rule could match is already allowed there.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from typing import Final, Literal, Protocol
 from pydantic import JsonValue
 
 from aegis_core.guardian import risk
+from aegis_core.guardian.allow_rules import AllowRule, eligible
 from aegis_core.guardian.rules import Rules, Target, canonical_target
 from aegis_core.server.schemas import Autonomy, Decision, RiskTier
 
@@ -45,7 +47,7 @@ Signal = Literal["echoes_observation", "high_rate", "novel_target", "sensitive_c
 """An anomaly the loop noticed about this call (`§ 8.1` step 5, `§ 8.6`). Any one of them
 raises the tier by one; `echoes_observation` also floors the decision at `confirm`."""
 
-Stage = Literal["forbidden", "unchecked", "scope", "tier"]
+Stage = Literal["forbidden", "unchecked", "scope", "tier", "rule"]
 """Which step decided: the UI offers different things for a scope `deny` (widen the
 scope) than for a FORBIDDEN one (nothing)."""
 
@@ -77,6 +79,10 @@ class TaskContext:
     #: the default is an empty scope, so nothing on disk is in it.
     in_scope: Callable[[str], bool] = _empty_scope
     signals: frozenset[Signal] = field(default_factory=frozenset)
+    #: The task this call belongs to, for `tool_for_task` rules.
+    task_id: str | None = None
+    #: The person's always-allow rules (`P3-11`). Consulted only as step 4 allows.
+    allow_rules: tuple[AllowRule, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +99,8 @@ class Verdict:
     #: The FORBIDDEN entry that matched, if one did.
     rule_id: str | None = None
     signals: frozenset[Signal] = frozenset()
+    #: The always-allow rule that relaxed a `confirm`, if one did.
+    allow_rule: int | None = None
 
 
 class GuardianDeniedError(Exception):
@@ -183,8 +191,17 @@ class Guardian:
             return Verdict("confirm", tier, "tier", reason, None, ctx.signals)
         if scope_confirm:
             reason = "This would read something outside the task's scope."
-            return Verdict("confirm", tier, "scope", reason, None, ctx.signals)
-        return Verdict(decision, tier, "tier", _TIER_REASONS[decision], None, ctx.signals)
+            verdict = Verdict("confirm", tier, "scope", reason, None, ctx.signals)
+        else:
+            verdict = Verdict(decision, tier, "tier", _TIER_REASONS[decision], None, ctx.signals)
+
+        # 4. An always-allow rule relaxes a `confirm`, and only as far as `eligible()` says.
+        if ctx.autonomy == "trusted" and ctx.allow_rules and eligible(verdict):
+            for rule in ctx.allow_rules:
+                if rule.matches(tool.name, params, targets, ctx.task_id):
+                    reason = "You chose to always allow this."
+                    return Verdict("allow", tier, "rule", reason, None, ctx.signals, rule.id)
+        return verdict
 
 
 _TIER_REASONS: Final[Mapping[Decision, str]] = {

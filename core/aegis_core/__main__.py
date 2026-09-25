@@ -33,6 +33,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from aegis_core import __version__
+from aegis_core.guardian.approvals import ApprovalBroker
 from aegis_core.logging_setup import configure_logging
 from aegis_core.models.service import ModelService
 from aegis_core.parent_watch import ParentWatch
@@ -47,6 +48,7 @@ from aegis_core.server.handshake import (
     read_token,
 )
 from aegis_core.server.hub import EventHub
+from aegis_core.storage.allow_rules import AllowRuleStore
 from aegis_core.storage.db import StorageError, bootstrap
 from aegis_core.storage.settings import SettingsStore
 from aegis_core.storage.usage import UsageLedger
@@ -63,6 +65,22 @@ EXIT_STORAGE_FAILED: Final = 4
 #: How long uvicorn gets to unwind before the process ends outright. Together with
 #: the 0.5 s poll interval this keeps the core inside § 3.1 step 6's 2 s budget.
 SHUTDOWN_GRACE_S: Final = 1.0
+
+
+def _approval_broker(hub: EventHub) -> ApprovalBroker:
+    """The approval broker, with always-allow rules if their table can be opened.
+
+    Without the store the broker still asks and still times out — the part that keeps
+    anything from running unapproved — and simply does not offer *Allow always*.
+    """
+    try:
+        rules: AllowRuleStore | None = AllowRuleStore.open()
+    except StorageError as error:
+        log.warning("approvals.rules_unavailable", extra={"error": type(error).__name__})
+        rules = None
+    return ApprovalBroker(
+        lambda kind, payload, task: hub.publish(kind, payload, task_id=task), rules
+    )
 
 
 def _model_service(hub: EventHub) -> ModelService | None:
@@ -165,6 +183,7 @@ def main(
     ensure_dpi_awareness()
 
     models: ModelService | None = None
+    approvals: ApprovalBroker | None = None
     token = read_token(stdin if stdin is not None else sys.stdin)
     bootstrap()
     sock = bind_loopback(args.port)
@@ -174,7 +193,8 @@ def main(
         auth = SessionAuth(token=token, supervisor_pid=supervisor_pid, local_port=port)
         hub = EventHub()
         models = _model_service(hub)
-        app = create_app(auth, hub, models)
+        approvals = _approval_broker(hub)
+        app = create_app(auth, hub, models, approvals=approvals)
 
         announce(
             Handshake(port=port, pid=os.getpid(), version=__version__),
@@ -194,6 +214,9 @@ def main(
             # connections, and they have to go even on the paths where the server never
             # ran and the lifespan therefore never did.
             models.close()
+        if approvals is not None:
+            # The same for the rule store's connection; closing twice is safe.
+            approvals.close()
 
 
 if __name__ == "__main__":

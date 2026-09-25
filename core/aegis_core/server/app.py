@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 
 from aegis_core import __version__
 from aegis_core.actuation.killswitch import KillSwitch
+from aegis_core.guardian.approvals import ApprovalBroker
 from aegis_core.models.service import ModelService
 from aegis_core.server.auth import SessionAuth, SessionAuthMiddleware
 from aegis_core.server.hub import EventHub
@@ -38,6 +39,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # First: a shutting-down core must not leave a question it can no longer act on.
+        app.state.approvals.close()
         app.state.hub.close()
         models: ModelService | None = app.state.models
         if models is not None:
@@ -73,6 +76,7 @@ def create_app(
     hub: EventHub | None = None,
     models: ModelService | None = None,
     kill_switch: KillSwitch | None = None,
+    approvals: ApprovalBroker | None = None,
 ) -> FastAPI:
     """Build the core's HTTP app, authenticated against this session's token.
 
@@ -88,6 +92,10 @@ def create_app(
     `kill_switch` is the one every `InputController` in this process must be attached
     to, reached as `app.state.kill_switch`; `POST /v1/kill` engages it (`P3-06`). One
     is created if none is given.
+
+    `approvals` is the broker the agent asks and `POST /v1/approvals/{id}` answers
+    (`P3-11`), reached as `app.state.approvals`. Without one, a broker is made on this
+    app's hub with no rule store, so *Allow always* is not offered and `/rules` is empty.
     """
     app = FastAPI(
         title="AEGIS core",
@@ -101,6 +109,12 @@ def create_app(
     app.state.hub = hub if hub is not None else EventHub()
     app.state.models = models
     app.state.kill_switch = kill_switch if kill_switch is not None else KillSwitch()
+    hub_ = app.state.hub
+    app.state.approvals = (
+        approvals
+        if approvals is not None
+        else ApprovalBroker(lambda kind, payload, task: hub_.publish(kind, payload, task_id=task))
+    )
     app.add_exception_handler(RequestValidationError, _on_invalid_request)
     app.include_router(router)
     # Added last so it wraps everything, including FastAPI's own 404 and 405

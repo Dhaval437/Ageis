@@ -73,6 +73,24 @@ export const DECISIONS = ['allow', 'confirm', 'deny'] as const;
 
 export type Decision = (typeof DECISIONS)[number];
 
+/** What the person answered an approval with: `approvals.choice`. */
+export const APPROVAL_CHOICES = ['allow', 'deny', 'allow_always'] as const;
+
+export type ApprovalChoice = (typeof APPROVAL_CHOICES)[number];
+
+/** Who decided: the person, the auto-deny timer, or a stop (kill switch, task ended). */
+export const APPROVAL_OUTCOME_SOURCES = ['user', 'timeout', 'stopped'] as const;
+
+export type ApprovalOutcomeSource = (typeof APPROVAL_OUTCOME_SOURCES)[number];
+
+/**
+ * An always-allow rule's scope: *this exact action*, *this tool in this folder*, or
+ * *this tool for this task only* (`UI.md § 5`). There is no "everything, forever".
+ */
+export const RULE_KINDS = ['exact', 'tool_in_folder', 'tool_for_task'] as const;
+
+export type RuleKind = (typeof RULE_KINDS)[number];
+
 /** `GET /v1/health` (`ARCHITECTURE.md § 9.1`). */
 export interface HealthResponse {
   /** Always `ok`; a core that cannot answer is down. */
@@ -280,4 +298,41 @@ export interface SpendTotals {
 export interface SpendResponse {
   readonly day: SpendTotals;
   readonly limits: BudgetLimitsSpec;
+}
+
+/**
+ * `POST /v1/approvals/{id}`: the person's answer.
+ *
+ * `rule` is required with `allow_always` and refused with anything else. It names a
+ * *kind* only: which folder or which task a rule covers is taken from the call being
+ * approved, never from the request, so the renderer cannot name a path.
+ */
+export interface ApprovalDecision {
+  readonly choice: ApprovalChoice;
+  readonly rule: RuleKind | null;
+}
+
+/** The core's answer to `POST /v1/approvals/{id}`. */
+export interface ApprovalResolved {
+  readonly approval_id: number;
+  readonly choice: ApprovalChoice;
+  /** The always-allow rule created, if one was. */
+  readonly rule_id: number | null;
+}
+
+/** One always-allow rule, as the Rules screen lists it. */
+export interface AllowRuleInfo {
+  readonly id: number;
+  readonly kind: RuleKind;
+  readonly tool: string;
+  /** Canonical folder, for `tool_in_folder`. */
+  readonly folder: string | null;
+  /** The task, for `tool_for_task`. */
+  readonly task_id: string | null;
+  readonly created_at: string;
+}
+
+/** `GET /v1/rules`: every always-allow rule, newest first. Each is revocable. */
+export interface AllowRuleList {
+  readonly rules: ReadonlyArray<AllowRuleInfo>;
 }
