@@ -47,7 +47,7 @@ export interface KillSwitchOptions {
   readonly gateway: () => CoreGateway | null;
   /**
    * Terminate the core now. Resolves `true` if there was a core to terminate.
-   * The supervisor's `terminate()`.
+   * The supervisor's `terminate('kill-switch')`.
    */
   readonly terminate: () => Promise<boolean>;
   readonly ackTimeoutMs?: number;

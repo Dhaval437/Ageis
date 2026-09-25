@@ -65,7 +65,7 @@ async function startFakeCore(mode: 'healthy' | 'hung') {
   expect(first.core).not.toBe(first.launcher);
   const killSwitch = createKillSwitch({
     gateway: () => running.gateway(),
-    terminate: () => running.terminate(),
+    terminate: () => running.terminate('kill-switch'),
   });
   return { running, killSwitch, ...first };
 }

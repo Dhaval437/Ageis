@@ -40,6 +40,23 @@ export const EVENT_TYPES = [
 
 export type EventType = (typeof EVENT_TYPES)[number];
 
+/**
+ * A task's place in `RECOVERY.md § 3.1`'s state machine: `tasks.status`, and the
+ * `status` in every `task.status` event's payload. MAIN's watchdog (`P3-07`) reads it.
+ */
+export const TASK_STATES = [
+  'QUEUED',
+  'RUNNING',
+  'PAUSED_BY_USER',
+  'WAITING_APPROVAL',
+  'DONE',
+  'FAILED',
+  'STOPPED',
+  'ABANDONED',
+] as const;
+
+export type TaskState = (typeof TASK_STATES)[number];
+
 /** `GET /v1/health` (`ARCHITECTURE.md § 9.1`). */
 export interface HealthResponse {
   /** Always `ok`; a core that cannot answer is down. */

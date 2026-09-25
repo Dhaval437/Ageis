@@ -59,6 +59,9 @@ export type SupervisorStatus =
   /** Out of attempts. The renderer shows RECOVERY.md § 4's Engine-unavailable screen. */
   | 'unavailable';
 
+/** Who asked for `terminate()`; see there. */
+export type TerminateCause = 'kill-switch' | 'watchdog';
+
 export interface SupervisorState {
   readonly status: SupervisorStatus;
   /** Restarts used inside the current window, for the Recovery screen's copy. */
@@ -112,15 +115,21 @@ export interface Supervisor {
   /** Kills the core and stops restarting it. Safe to call more than once. */
   readonly stop: () => Promise<void>;
   /**
-   * The kill switch's last resort (`P3-06`): terminate the core **now** — no
-   * polite signal, no grace period — then start a fresh one with a clean
-   * attempt budget. Resolves `true` if there was a running core to terminate.
+   * Terminate the core **now** — no polite signal, no grace period — then
+   * start a fresh one. Resolves `true` if there was a running core to
+   * terminate. Two callers, and the cause decides the attempt budget:
+   *
+   *  - `kill-switch` (`P3-06`, its last resort): a person asked, so the fresh
+   *    core starts with a **clean** budget, as `restart()` does.
+   *  - `watchdog` (`P3-07`): the core stopped answering mid-task. Nobody asked,
+   *    so it **counts** like a crash, and a core that keeps hanging ends on the
+   *    Engine-unavailable screen instead of being respawned forever.
    *
    * It terminates the process that answered the handshake as well as the
    * child MAIN spawned, because in development those differ: the venv's
    * `python.exe` re-execs, so the core holding the mouse is a *grandchild*.
    */
-  readonly terminate: () => Promise<boolean>;
+  readonly terminate: (cause: TerminateCause) => Promise<boolean>;
 }
 
 /**
@@ -357,7 +366,7 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
     });
   }
 
-  function terminate(): Promise<boolean> {
+  function terminate(cause: TerminateCause): Promise<boolean> {
     const running = child;
     const pid = corePid;
     if (running === null) return Promise.resolve(false);
@@ -372,12 +381,18 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
     if (running.pid !== undefined && running.pid !== pid) terminatePid(running.pid);
     // Belt and braces for the launcher; `TerminateProcess` again is harmless.
     running.kill('SIGKILL');
-    setState({ lastError: 'The kill switch stopped the engine.' });
-    // A person asked, as with `restart()`: a fresh core with no task in it is
-    // what the stop leaves behind, and it must not be refused for a crash budget
-    // the person did not spend.
-    attemptTimes = [];
-    setState({ attempts: 0 });
+    if (cause === 'watchdog') {
+      // A hang is a failure like a crash: it spends the budget, so a core that
+      // hangs on every task stops being respawned (RECOVERY.md § 4).
+      setState({ lastError: 'The engine stopped responding during a task, so Aegis stopped it.' });
+    } else {
+      setState({ lastError: 'The kill switch stopped the engine.' });
+      // A person asked, as with `restart()`: a fresh core with no task in it is
+      // what the stop leaves behind, and it must not be refused for a crash
+      // budget the person did not spend.
+      attemptTimes = [];
+      setState({ attempts: 0 });
+    }
     scheduleRestart();
     return Promise.resolve(true);
   }

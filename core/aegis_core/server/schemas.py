@@ -73,6 +73,20 @@ EventType = Literal[
 """Every event type on `WS /v1/stream`. Adding one is an `ARCHITECTURE.md § 9.2` edit first."""
 
 
+TaskState = Literal[
+    "QUEUED",
+    "RUNNING",
+    "PAUSED_BY_USER",
+    "WAITING_APPROVAL",
+    "DONE",
+    "FAILED",
+    "STOPPED",
+    "ABANDONED",
+]
+"""A task's place in `RECOVERY.md § 3.1`'s state machine: `tasks.status`, and the
+`status` in every `task.status` event's payload. MAIN's watchdog (`P3-07`) reads it."""
+
+
 class StreamEvent(BaseModel):
     """One message on `WS /v1/stream` (`ARCHITECTURE.md § 9.2`)."""
 

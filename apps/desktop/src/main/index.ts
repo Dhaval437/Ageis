@@ -7,8 +7,8 @@
  *
  * Landed so far: window, frameless shell for the custom titlebar, tray, the
  * single-instance lock (P0-02), the preload bridge (P0-04), the core
- * supervisor (P0-07), the event stream forwarded to the renderer (P0-09) and
- * the kill switch (P3-06).
+ * supervisor (P0-07), the event stream forwarded to the renderer (P0-09), the
+ * kill switch (P3-06) and the watchdog (P3-07).
  */
 
 import { app, globalShortcut } from 'electron';
@@ -28,6 +28,8 @@ import { createKillSwitch, type KillReport, type KillSwitch } from './kill-switc
 import { hotkeysFile } from './paths.js';
 import { registerBridgeIpc, type BridgeIpc } from './ipc.js';
 import { createCoreStream, type CoreAvailability, type CoreStream } from './core-stream.js';
+import { createTaskActivity } from './task-activity.js';
+import { createWatchdog, type Watchdog, type WatchdogReport } from './watchdog.js';
 import {
   createSupervisor,
   resolveCoreLaunch,
@@ -44,6 +46,9 @@ let bridge: BridgeIpc | null = null;
 let supervisor: Supervisor | null = null;
 let coreStream: CoreStream | null = null;
 let killSwitch: KillSwitch | null = null;
+let watchdog: Watchdog | null = null;
+/** Whether a task is running, learnt from the stream MAIN forwards (P3-07). */
+const taskActivity = createTaskActivity();
 let hotkeys: KillSwitchHotkeys | null = null;
 let trayState: TrayMenuState = {
   windowVisible: false,
@@ -139,6 +144,9 @@ function bootstrap(): void {
   });
 
   app.on('before-quit', () => {
+    // First, so a core being stopped on purpose is never mistaken for a hung one.
+    watchdog?.stop();
+    watchdog = null;
     tray?.destroy();
     tray = null;
     coreStream?.dispose();
@@ -160,6 +168,7 @@ function bootstrap(): void {
       // channel that is not there yet during its first paint.
       coreStream = createCoreStream({
         deliver: (message) => {
+          taskActivity.observe(message);
           bridge?.send.coreEvent(message);
         },
       });
@@ -170,9 +179,18 @@ function bootstrap(): void {
       // core is still starting, or never starts at all.
       killSwitch = createKillSwitch({
         gateway: () => supervisor?.gateway() ?? null,
-        terminate: () => supervisor?.terminate() ?? Promise.resolve(false),
+        terminate: () => supervisor?.terminate('kill-switch') ?? Promise.resolve(false),
         onReport: logKillReport,
       });
+      // The other half of "a hung agent is never a still-clicking agent": the
+      // kill switch covers a hang somebody notices, this one a hang nobody does.
+      watchdog = createWatchdog({
+        gateway: () => supervisor?.gateway() ?? null,
+        taskRunning: taskActivity.running,
+        terminate: () => supervisor?.terminate('watchdog') ?? Promise.resolve(false),
+        onReport: logWatchdogReport,
+      });
+      watchdog.start();
       hotkeys = createHotkeyService({
         registry: globalShortcut,
         store: createFileHotkeyStore(hotkeysFile(process.env, homedir())),
@@ -279,6 +297,14 @@ function logKillReport(report: KillReport): void {
       `[main] kill switch: the core could not release ${String(report.releaseFailures)} controller(s); a key may be held`,
     );
   }
+}
+
+/** One line per kill; the numbers are all MAIN has, and all a bug report needs. */
+function logWatchdogReport(report: WatchdogReport): void {
+  const silent = report.silentMs === null ? 'never answered' : `silent ${report.silentMs.toFixed(0)} ms`;
+  console.error(
+    `[main] watchdog: the core missed ${String(report.misses)} pings during a task (${silent}); ${report.outcome}`,
+  );
 }
 
 function availabilityOf(state: SupervisorState): CoreAvailability {

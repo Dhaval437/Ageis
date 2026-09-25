@@ -470,7 +470,7 @@ describe('createSupervisor', () => {
       const { supervisor, terminated, cores } = build(() => new LauncherCore(7000));
       await supervisor.start();
 
-      expect(await supervisor.terminate()).toBe(true);
+      expect(await supervisor.terminate('kill-switch')).toBe(true);
 
       // 4001 is the core that answered the handshake; 7000 the child MAIN spawned.
       expect(terminated).toEqual([4001, 7000]);
@@ -482,7 +482,7 @@ describe('createSupervisor', () => {
     it('terminates once when the child is the core, as when packaged', async () => {
       const { supervisor, terminated } = build(() => new LauncherCore(4001));
       await supervisor.start();
-      await supervisor.terminate();
+      await supervisor.terminate('kill-switch');
       expect(terminated).toEqual([4001]);
       await supervisor.stop();
     });
@@ -490,7 +490,7 @@ describe('createSupervisor', () => {
     it('starts a fresh core with a new session and a clean attempt budget', async () => {
       const { supervisor, sessions, cores } = build(() => new FakeCore());
       await supervisor.start();
-      await supervisor.terminate();
+      await supervisor.terminate('kill-switch');
 
       const state = await settleOn(() => supervisor.state(), ['running']);
       expect(cores).toHaveLength(2);
@@ -502,7 +502,7 @@ describe('createSupervisor', () => {
     it('does not count its own kill as a crash', async () => {
       const { supervisor, cores } = build(() => new FakeCore());
       await supervisor.start();
-      await supervisor.terminate();
+      await supervisor.terminate('kill-switch');
       // The terminated process's exit arrives after MAIN has let go of it.
       cores[0]?.exit(1);
       await settleOn(() => supervisor.state(), ['running']);
@@ -513,18 +513,49 @@ describe('createSupervisor', () => {
 
     it('answers false, and terminates nothing, with no core running', async () => {
       const { supervisor, terminated } = build(() => new FakeCore());
-      expect(await supervisor.terminate()).toBe(false);
+      expect(await supervisor.terminate('kill-switch')).toBe(false);
       await supervisor.start();
       await supervisor.stop();
-      expect(await supervisor.terminate()).toBe(false);
+      expect(await supervisor.terminate('kill-switch')).toBe(false);
       expect(terminated).toEqual([]);
+    });
+
+    it('counts a watchdog kill against the budget, unlike a kill-switch press', async () => {
+      const { supervisor, cores } = build(() => new FakeCore());
+      await supervisor.start();
+
+      expect(await supervisor.terminate('watchdog')).toBe(true);
+      const state = await settleOn(() => supervisor.state(), ['running']);
+
+      expect(cores).toHaveLength(2);
+      expect(state.attempts).toBe(1);
+      expect(state.lastError).toBeNull();
+      await supervisor.stop();
+    });
+
+    it('ends on the Engine-unavailable screen for a core that hangs on every task', async () => {
+      const { supervisor, cores } = build(() => new FakeCore());
+      await supervisor.start();
+
+      // The first start plus two respawns is the whole budget; the third hang
+      // leaves nothing to spend, so no fourth core is started.
+      for (let hang = 0; hang < 3; hang += 1) {
+        await settleOn(() => supervisor.state(), ['running']);
+        await supervisor.terminate('watchdog');
+      }
+      const state = await settleOn(() => supervisor.state(), ['unavailable']);
+
+      expect(cores).toHaveLength(3);
+      expect(state.lastError).toBe('The engine stopped responding during a task, so Aegis stopped it.');
+      expect(supervisor.gateway()).toBeNull();
+      await supervisor.stop();
     });
 
     it('never terminates a PID MAIN has already seen exit', async () => {
       const { supervisor, terminated, cores } = build(() => new LauncherCore(7000));
       await supervisor.start();
       cores[0]?.exit(1);
-      expect(await supervisor.terminate()).toBe(false);
+      expect(await supervisor.terminate('kill-switch')).toBe(false);
       expect(terminated).toEqual([]);
       await supervisor.stop();
     });

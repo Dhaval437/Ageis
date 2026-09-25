@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
+from typing import get_args
 
 import pytest
+from aegis_core.server.schemas import TaskState
 from aegis_core.storage.db import StorageError, bootstrap, connect, migrate, schema_version
-from aegis_core.storage.migrations import MIGRATIONS, Migration
+from aegis_core.storage.migrations import MIGRATIONS, Migration, m0001_initial as m0001
 
 #: `ARCHITECTURE.md § 7`, plus `forward_json`/`created_at` on `journal` from
 #: `RECOVERY.md § 2.1`. A column dropped or renamed by accident fails here.
@@ -272,6 +275,21 @@ def test_the_audit_log_rejects_updates(conn: sqlite3.Connection) -> None:
 def test_an_unknown_task_status_is_rejected(conn: sqlite3.Connection) -> None:
     with pytest.raises(sqlite3.IntegrityError):
         _add_task(conn, status="ALMOST_DONE")
+
+
+def test_the_task_status_check_is_exactly_the_wire_vocabulary() -> None:
+    # `tasks.status` and the `task.status` event carry the same words, and MAIN's
+    # watchdog decides on them: a state one side knows and the other refuses is a
+    # task the watchdog cannot see.
+    match = re.search(r"status\s+TEXT\s+NOT NULL CHECK \(status IN \(([^)]*)\)\)", m0001.SQL)
+    assert match is not None
+    checked = re.findall(r"'([A-Z_]+)'", match.group(1))
+    assert checked == list(get_args(TaskState))
+
+
+@pytest.mark.parametrize("status", get_args(TaskState))
+def test_every_task_state_is_accepted(conn: sqlite3.Connection, status: str) -> None:
+    _add_task(conn, status=status)
 
 
 def test_an_unknown_risk_tier_is_rejected(conn: sqlite3.Connection) -> None:

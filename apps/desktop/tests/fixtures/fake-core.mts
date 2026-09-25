@@ -1,7 +1,8 @@
 /**
- * A stand-in core for `kill-switch.live.test.ts`: a real process tree that
- * speaks the real handshake, so the kill switch is exercised end to end against
- * something that can genuinely hang.
+ * A stand-in core for `kill-switch.live.test.ts` and `watchdog.live.test.ts`:
+ * a real process tree that speaks the real handshake, so the kill switch and
+ * the watchdog are exercised end to end against something that can genuinely
+ * hang.
  *
  *   node fake-core.mts launcher <healthy|hung>
  *
@@ -10,7 +11,8 @@
  * *grandchild*. The core reads the token from stdin, serves `/v1/health`, and
  * then either acknowledges `POST /v1/kill` (`healthy`) or wedges its own event
  * loop on it (`hung`), which is what a hung core looks like from MAIN: a port
- * that accepts and never answers.
+ * that accepts and never answers. In either mode, `POST /v1/test/wedge` answers
+ * and then wedges, which is a core hanging mid-task on its own.
  *
  * Run by Node directly (type stripping), never bundled or packaged.
  */
@@ -64,6 +66,12 @@ async function core(): Promise<void> {
     };
     if (request.method === 'GET' && request.url === '/v1/health') {
       reply({ status: 'ok', version: '0.0.0-test', uptime: 0 });
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/v1/test/wedge') {
+      reply({ wedging: true });
+      // Long enough for the answer to leave the socket before the loop stops.
+      setTimeout(wedge, 50);
       return;
     }
     if (request.method === 'POST' && request.url === '/v1/kill') {
