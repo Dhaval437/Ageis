@@ -7,12 +7,15 @@ Three layers, like `test_display.py`:
   synthetic layouts with the Win32 and `mss` calls replaced;
 * live — this machine's real screen, including a red window the test opens itself.
 
-The < 150 ms budget from `PROGRESS.md` P2-02 is held two ways (P2-10). The
-default suite times the downscale and encode — this module's own work — on a
-fixed, deliberately busy frame, so the number cannot depend on what happens to
-be on screen. The whole capture on the live screen is a benchmark, run with
-`AEGIS_PERF=1` on a quiet machine: it measures Windows and the machine's load as
-much as this code, so it cannot be a gate on a developer's busy desktop.
+The < 150 ms budget from `PROGRESS.md` P2-02 is held three ways (P2-10, P2-14).
+The regressions that would break it are pinned **structurally** — WebP method 0,
+and the downscale before the encode (every output-size assertion) — so no load
+can hide or fake them. The default suite then times the downscale and encode of
+a fixed, deliberately busy frame **against a calibration workload run in the
+same moments**, so the number is a ratio a busy or battery-powered machine moves
+together rather than a wall-clock figure it inflates. The absolute 150 ms, on the
+live screen, is a benchmark run with `AEGIS_PERF=1` on a quiet machine: it
+measures Windows and the machine's load as much as this code.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import statistics
 import sys
 import threading
 import time
+import zlib
 from collections.abc import Iterator
 from ctypes import wintypes
 from typing import Any
@@ -570,24 +574,65 @@ def busy_desktop(width: int = 3200, height: int = 2000) -> Frame:
     )
 
 
-def test_downscaling_and_encoding_a_busy_desktop_fit_the_budget() -> None:
-    """The half of P2-02's budget this module controls, on content that cannot vary.
+#: The encode may cost at most this many times the calibration, run alternately
+#: with it. Measured on the dev machine (P2-14), on battery, with 0 to 12 busy
+#: processes on 8 logical CPUs: the real encode ran 95 to 392 ms and the median
+#: ratio stayed 1.25 to 1.62; with WebP method 4 it was 3.69 to 5.37. The ceiling
+#: is twice the worst honest reading, so load cannot reach it and a regression of
+#: that size cannot hide.
+ENCODE_TO_CALIBRATION_CEILING = 3.2
 
-    The ceiling is the **whole** 150 ms, not a share of it, because timing on a
-    shared machine is never load-proof: with every logical CPU busy this took
-    ~130 ms here, and even the thread's own CPU time doubled (hyperthreads share
-    cores, turbo clocks drop). Idle it is ~68 ms, so the test still fails on
-    the regressions that matter — WebP method 4 (+~120 ms) or an encode at full
-    resolution (~700 ms).
+
+def calibration_text() -> bytes:
+    """~1 MB of seeded word-like text for zlib: the same bytes every run, and work
+    the CPU does the same way the encode does (a C loop over a large buffer), so
+    load, turbo clocks and battery throttling slow both alike."""
+    rnd = random.Random(5)  # noqa: S311 - a fixed workload for a timing test, not secrets
+    words = [
+        bytes(rnd.choice(b"abcdefghij ") for _ in range(rnd.randint(3, 9))) for _ in range(500)
+    ]
+    return b" ".join(rnd.choice(words) for _ in range(250_000))[:1_000_000]
+
+
+def test_downscaling_and_encoding_a_busy_desktop_keep_pace_with_a_fixed_workload() -> None:
+    """The half of P2-02's budget this module controls, on content that cannot vary,
+    measured against the machine's own speed at that moment.
+
+    A wall-clock ceiling was missed at ~305 to 332 ms on a laptop on battery with
+    other programs busy (P2-14), with this code unchanged; the thread's own CPU
+    time grows under load too (and ticks in 15.6 ms steps
+    on Windows). A calibration timed *alternately* with the encode sees the same
+    load, and each pair's ratio is taken before the median, so load that comes and
+    goes during the test cancels out rather than landing on one side.
     """
     frame = busy_desktop()
-    frame._encode()  # first call pays for the codec's setup
-    timings: list[float] = []
+    text = calibration_text()
+    frame._encode()  # first calls pay for the codec's and zlib's setup
+    zlib.compress(text, 6)
+    ratios: list[float] = []
     for _ in range(7):
         started = time.perf_counter()
+        zlib.compress(text, 6)
+        calibration = time.perf_counter() - started
+        started = time.perf_counter()
         frame._encode()
-        timings.append((time.perf_counter() - started) * 1000)
-    assert statistics.median(timings) < BUDGET_MS, timings
+        ratios.append((time.perf_counter() - started) / calibration)
+    assert statistics.median(ratios) < ENCODE_TO_CALIBRATION_CEILING, ratios
+
+
+def test_the_encoder_runs_libwebps_fastest_method(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Method 4, Pillow's default, costs ~150 ms at 1280x800 on its own — the whole
+    budget. Pinned by what is passed to the encoder, so no timing is involved."""
+    seen: list[dict[str, Any]] = []
+    save = Image.Image.save
+
+    def spy(image: Image.Image, fp: Any, format: str | None = None, **params: Any) -> None:  # noqa: A002
+        seen.append({"format": format, **params})
+        save(image, fp, format, **params)
+
+    monkeypatch.setattr(Image.Image, "save", spy)
+    frame_of(20, 10)._encode()
+    assert seen == [{"format": "WEBP", "quality": screen.WEBP_QUALITY, "method": 0}]
 
 
 def test_the_busy_desktop_is_at_least_as_hard_as_a_real_screen() -> None:
