@@ -55,6 +55,10 @@ MOUSEEVENTF_ABSOLUTE: Final = 0x8000
 
 WHEEL_DELTA: Final = 120
 
+#: `MapVirtualKeyW` mode: virtual key → scan code, with `0xE0`/`0xE1` in the high byte
+#: for keys whose scan code carries that prefix.
+MAPVK_VK_TO_VSC_EX: Final = 4
+
 WH_KEYBOARD_LL: Final = 13
 WH_MOUSE_LL: Final = 14
 HC_ACTION: Final = 0
@@ -164,6 +168,12 @@ user32.PostThreadMessageW.argtypes = (
 )
 user32.PostThreadMessageW.restype = wintypes.BOOL
 
+user32.MapVirtualKeyW.argtypes = (wintypes.UINT, wintypes.UINT)
+user32.MapVirtualKeyW.restype = wintypes.UINT
+
+user32.VkKeyScanW.argtypes = (wintypes.WCHAR,)
+user32.VkKeyScanW.restype = ctypes.c_short
+
 kernel32.GetCurrentThreadId.argtypes = ()
 kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 
@@ -187,6 +197,25 @@ def send_input(events: list[INPUT]) -> None:
     sent = user32.SendInput(len(events), array, ctypes.sizeof(INPUT))
     if sent != len(events):
         raise ctypes.WinError(ctypes.get_last_error())
+
+
+def scan_code(vk: int) -> int:
+    """`MapVirtualKeyW(vk, MAPVK_VK_TO_VSC_EX)`: the scan code, prefix in the high byte.
+
+    Uses the calling thread's keyboard layout. `0` when the key has none.
+    """
+    return int(user32.MapVirtualKeyW(vk, MAPVK_VK_TO_VSC_EX))
+
+
+def vk_for_char(char: str) -> tuple[int, int] | None:
+    """`VkKeyScanW(char)` as `(vk, shift_state)` on the current layout, or `None`.
+
+    `shift_state` is a bit set: 1 Shift, 2 Ctrl, 4 Alt.
+    """
+    result = int(user32.VkKeyScanW(char))
+    if result == -1:
+        return None
+    return result & 0xFF, (result >> 8) & 0xFF
 
 
 def current_thread_id() -> int:

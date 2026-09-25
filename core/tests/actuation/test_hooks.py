@@ -284,9 +284,7 @@ def test_signature_is_configurable_and_is_what_the_hook_compares(
         assert monitor.callback_errors == 0
 
 
-def test_listeners_run_off_the_hook_thread(
-    signal: PreemptSignal, keys_only: InputMonitor
-) -> None:
+def test_listeners_run_off_the_hook_thread(signal: PreemptSignal, keys_only: InputMonitor) -> None:
     """Reacting to preemption is I/O; it must not happen inside the callback."""
     seen: list[str] = []
     signal.add_listener(lambda event: seen.append(threading.current_thread().name))

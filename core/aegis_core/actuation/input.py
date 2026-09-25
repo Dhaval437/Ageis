@@ -16,62 +16,68 @@ Two rules from `REMEMBER.md` shape this module:
 and it stamps `AEGIS_SIGNATURE` on every event it builds — see `signature.py`
 for why the preemption hook depends on that being exceptionless.
 
-Full gesture coverage (absolute moves, bezier motion) is `P3-01`/`P3-03`; this
-module carries what preemption needs plus the primitives those will build on.
+Positions are physical pixels on the virtual desktop (`perception/display.py`,
+`P2-01`), and every absolute move re-reads the display layout first and refuses if it
+changed since the position was measured: a box from before a monitor was unplugged
+is exactly how a click lands somewhere nobody chose. Keys go out with the scan code
+Windows maps them to and the extended flag `keys.is_extended()` decides, so an app
+that reads scan codes sees the key that was meant. Human-like motion is `P3-03`.
 """
 
 from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from enum import StrEnum
-from typing import Final, Protocol
+from typing import Protocol
 
 from aegis_core.actuation import win32
+from aegis_core.actuation.keys import (
+    MODIFIER_VKS,
+    VK_CONTROL,
+    VK_LCONTROL,
+    VK_LMENU,
+    VK_LSHIFT,
+    VK_LWIN,
+    VK_MENU,
+    VK_RCONTROL,
+    VK_RETURN,
+    VK_RMENU,
+    VK_RSHIFT,
+    VK_RWIN,
+    VK_SHIFT,
+    is_extended,
+    parse_combo,
+)
 from aegis_core.actuation.killswitch import KillSwitch
 from aegis_core.actuation.preempt import PreemptSignal
 from aegis_core.actuation.signature import AEGIS_SIGNATURE
+from aegis_core.perception.display import DisplayLayout, Point, verify_layout
 
-# ---------------------------------------------------------------------------
-# Virtual-key codes we name here. The full table belongs to P3-01.
-# ---------------------------------------------------------------------------
-
-VK_RETURN: Final = 0x0D
-VK_SHIFT: Final = 0x10
-VK_CONTROL: Final = 0x11
-VK_MENU: Final = 0x12  # Alt
-VK_LWIN: Final = 0x5B
-VK_RWIN: Final = 0x5C
-VK_LSHIFT: Final = 0xA0
-VK_RSHIFT: Final = 0xA1
-VK_LCONTROL: Final = 0xA2
-VK_RCONTROL: Final = 0xA3
-VK_LMENU: Final = 0xA4
-VK_RMENU: Final = 0xA5
-
-#: Ctrl / Alt / Shift / Win, both sides, plus the side-agnostic aliases.
-#: These are released *last* on abort so a combo unwinds the way an application
-#: expects, and they are the keys `REMEMBER.md` invariant 3 is really about.
-MODIFIER_VKS: Final[frozenset[int]] = frozenset(
-    {
-        VK_SHIFT,
-        VK_CONTROL,
-        VK_MENU,
-        VK_LWIN,
-        VK_RWIN,
-        VK_LSHIFT,
-        VK_RSHIFT,
-        VK_LCONTROL,
-        VK_RCONTROL,
-        VK_LMENU,
-        VK_RMENU,
-    }
-)
-
-#: Keys Windows expects to be flagged as extended scan codes.
-_EXTENDED_VKS: Final[frozenset[int]] = frozenset({VK_RCONTROL, VK_RMENU, VK_LWIN, VK_RWIN})
+#: Re-exported: older callers import the modifier names from here.
+__all__ = [
+    "MODIFIER_VKS",
+    "VK_CONTROL",
+    "VK_LCONTROL",
+    "VK_LMENU",
+    "VK_LSHIFT",
+    "VK_LWIN",
+    "VK_MENU",
+    "VK_RCONTROL",
+    "VK_RETURN",
+    "VK_RMENU",
+    "VK_RSHIFT",
+    "VK_RWIN",
+    "VK_SHIFT",
+    "InputAbortedError",
+    "InputBackend",
+    "InputController",
+    "MouseButton",
+    "ReleaseFailedError",
+    "SendInputBackend",
+]
 
 
 class MouseButton(StrEnum):
@@ -111,6 +117,10 @@ class InputBackend(Protocol):
 
     def mouse_move(self, dx: int, dy: int) -> None: ...
 
+    def mouse_move_absolute(self, ax: int, ay: int) -> None:
+        """Move to `(ax, ay)` in `SendInput`'s 0..65535 virtual-desktop units."""
+        ...
+
     def mouse_button(self, button: MouseButton, *, down: bool) -> None: ...
 
     def scroll(self, dx: int, dy: int) -> None: ...
@@ -147,10 +157,13 @@ class SendInputBackend:
     # -- InputBackend -------------------------------------------------------
 
     def key(self, vk: int, *, down: bool) -> None:
+        mapped = win32.scan_code(vk)
         flags = 0 if down else win32.KEYEVENTF_KEYUP
-        if vk in _EXTENDED_VKS:
+        if is_extended(vk, mapped):
             flags |= win32.KEYEVENTF_EXTENDEDKEY
-        win32.send_input([self._key_event(vk=vk, scan=0, flags=flags)])
+        # An `E1` key (Pause) has no one-byte scan code; the VK alone carries it.
+        scan = 0 if (mapped >> 8) == 0xE1 else mapped & 0xFF
+        win32.send_input([self._key_event(vk=vk, scan=scan, flags=flags)])
 
     def unicode_char(self, char: str) -> None:
         r"""Type one character. `\n` becomes Enter; astral chars go as a surrogate pair."""
@@ -176,6 +189,10 @@ class SendInputBackend:
 
     def mouse_move(self, dx: int, dy: int) -> None:
         win32.send_input([self._mouse_event(dx=dx, dy=dy, flags=win32.MOUSEEVENTF_MOVE)])
+
+    def mouse_move_absolute(self, ax: int, ay: int) -> None:
+        flags = win32.MOUSEEVENTF_MOVE | win32.MOUSEEVENTF_ABSOLUTE | win32.MOUSEEVENTF_VIRTUALDESK
+        win32.send_input([self._mouse_event(dx=ax, dy=ay, flags=flags)])
 
     def mouse_button(self, button: MouseButton, *, down: bool) -> None:
         flags = {
@@ -221,6 +238,7 @@ class InputController:
         *,
         kill: KillSwitch | None = None,
         inter_event_delay: float = 0.002,
+        layout_check: Callable[[DisplayLayout], DisplayLayout] = verify_layout,
     ) -> None:
         if inter_event_delay < 0:
             raise ValueError("inter_event_delay must not be negative")
@@ -231,6 +249,7 @@ class InputController:
         self._held_keys: list[int] = []
         self._held_buttons: list[MouseButton] = []
         self._kill = kill
+        self._layout_check = layout_check
         if kill is not None:
             kill.attach(self)
 
@@ -384,6 +403,10 @@ class InputController:
                     self._held_keys.remove(vk)
                 self._pace()
 
+    def press_keys(self, spec: str) -> None:
+        """`press_combo()` from text: `"ctrl+shift+n"`, `"alt+f4"`, `"enter"`."""
+        self.press_combo(*parse_combo(spec))
+
     def type_text(self, text: str) -> None:
         with self._action():
             for char in text:
@@ -391,7 +414,7 @@ class InputController:
                 self._pace()
 
     def move_by(self, dx: int, dy: int, *, steps: int = 1) -> None:
-        """Relative motion. Absolute, DPI-aware moves land with `P3-01`/`P2-01`."""
+        """Relative motion, in mickeys. Pointer acceleration applies: use `move_to()`."""
         if steps < 1:
             raise ValueError("steps must be at least 1")
         with self._action():
@@ -400,6 +423,80 @@ class InputController:
                 step_y = dy * (index + 1) // steps - dy * index // steps
                 self._backend.mouse_move(step_x, step_y)
                 self._pace()
+
+    def _absolute(self, layout: DisplayLayout, *points: Point) -> list[tuple[int, int]]:
+        """Every point in `SendInput` units, under a layout re-read **now**.
+
+        All of them are converted before anything is sent, so a path that crosses a
+        dead zone between monitors is refused whole rather than half-performed.
+        """
+        current = self._layout_check(layout)
+        return [current.to_absolute(point) for point in points]
+
+    def move_to(self, point: Point, layout: DisplayLayout) -> None:
+        """Put the cursor on `point`, a physical pixel measured under `layout`.
+
+        Raises `LayoutChangedError` if the monitors changed since `layout` was read,
+        and `OffScreenError` if `point` is on no monitor. Nothing moves in either case.
+        """
+        with self._action():
+            [(ax, ay)] = self._absolute(layout, point)
+            self._backend.mouse_move_absolute(ax, ay)
+
+    def click_at(
+        self,
+        point: Point,
+        layout: DisplayLayout,
+        *,
+        button: MouseButton = MouseButton.LEFT,
+        count: int = 1,
+    ) -> None:
+        """Move to `point`, then click: single, double (`count=2`) or right."""
+        if count < 1:
+            raise ValueError("count must be at least 1")
+        with self._action():
+            [(ax, ay)] = self._absolute(layout, point)
+            self._backend.mouse_move_absolute(ax, ay)
+            self._pace()
+            self.click(button, count=count)
+
+    def drag_to(
+        self,
+        start: Point,
+        end: Point,
+        layout: DisplayLayout,
+        *,
+        button: MouseButton = MouseButton.LEFT,
+        steps: int = 8,
+    ) -> None:
+        """Press at `start`, move to `end` in `steps` straight segments, release.
+
+        Every intermediate point is checked before the button goes down, so a drag
+        that would cross the gap between two monitors never starts.
+        """
+        if steps < 1:
+            raise ValueError("steps must be at least 1")
+        path = [
+            Point(
+                start.x + (end.x - start.x) * index // steps,
+                start.y + (end.y - start.y) * index // steps,
+            )
+            for index in range(steps + 1)
+        ]
+        with self._action():
+            absolute = self._absolute(layout, *path)
+            self._backend.mouse_move_absolute(*absolute[0])
+            self._pace()
+            self._backend.mouse_button(button, down=True)
+            with self._lock:
+                self._held_buttons.append(button)
+            self._pace()
+            for ax, ay in absolute[1:]:
+                self._backend.mouse_move_absolute(ax, ay)
+                self._pace()
+            self._backend.mouse_button(button, down=False)
+            with self._lock:
+                self._held_buttons.remove(button)
 
     def button_down(self, button: MouseButton = MouseButton.LEFT) -> None:
         with self._action():

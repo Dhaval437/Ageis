@@ -59,6 +59,9 @@ class RecordingBackend:
     def mouse_move(self, dx: int, dy: int) -> None:
         self._record(Recorded("move", (dx, dy)))
 
+    def mouse_move_absolute(self, ax: int, ay: int) -> None:
+        self._record(Recorded("move_to", (ax, ay)))
+
     def mouse_button(self, button: MouseButton, *, down: bool) -> None:
         self._record(Recorded("button", button, down))
 

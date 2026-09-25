@@ -103,7 +103,7 @@ aegis/
 │  │  ├─ models/                  # router.py, providers/*.py, schemas.py, budget.py, service.py
 │  │  ├─ tools/                   # registry.py + one module per tool family
 │  │  ├─ perception/              # display.py (+ win32.py), screen.py, uia_tree.py, redact.py, prune.py, mark.py, ocr.py, grounding.py, phash.py
-│  │  ├─ actuation/               # input.py (SendInput), window.py, preempt.py, killswitch.py
+│  │  ├─ actuation/               # input.py (SendInput), keys.py, window.py, preempt.py, killswitch.py, win32.py
 │  │  ├─ guardian/                # policy.py, rules.yaml, rules.py, risk.py, scope.py, win32.py, approvals.py
 │  │  ├─ recovery/                # journal.py, undo.py, snapshot.py
 │  │  ├─ storage/                 # db.py, migrations/, audit.py, vault.py, usage.py, settings.py, scopes.py
@@ -279,6 +279,8 @@ v1 tool families:
 | `browser` | `open`, `goto`, `find`, `click_web`, `fill_web`, `extract`, `download` | CAUTION (fill DANGEROUS) |
 | `clipboard` | `read_clipboard`, `write_clipboard` | CAUTION (read is SAFE but redacted) |
 | `task` | `ask_user`, `report_progress`, `finish`, `give_up`, `remember_fact` | SAFE |
+
+*The input layer the `input` tools stand on (P3-01).* `actuation/input.py`'s `InputController` does `move_to(point, layout)`, `click_at` (single, double via `count=2`, right via `button`), `drag_to(start, end, layout)`, `scroll`, `type_text` (Unicode, astral characters as surrogate pairs) and `press_keys("ctrl+shift+n")`. Positions are P2-01's physical virtual-desktop pixels, sent as `MOUSEEVENTF_ABSOLUTE | VIRTUALDESK` through `DisplayLayout.to_absolute()`, and every absolute gesture re-reads the layout first (`verify_layout`) and refuses if it changed since the position was measured; a drag converts its whole path before the button goes down, so one that would cross a dead zone between monitors never starts. `actuation/keys.py` names keys (layout-independent: `ctrl`, `f1`–`f24`, `left`, `pgdn`, `numpad0`, media keys…) and reads a single character on the user's own layout (`VkKeyScanW`), adding whatever Shift/Ctrl/Alt it needs, so `ctrl+?` is right on any keyboard. Every key goes out with the scan code `MapVirtualKeyW` gives and `KEYEVENTF_EXTENDEDKEY` when Windows reports an `E0` prefix **or** the key is on Microsoft's documented extended list — measured here, `MapVirtualKeyW` reports the arrows, Insert/Delete, Home/End and Page Up/Down with the keypad scan codes they share, so without the list Left arrives as numpad 4. Human-like motion is `P3-03`.
 
 ---
 

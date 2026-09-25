@@ -24,7 +24,9 @@ from aegis_core.actuation.signature import AEGIS_SIGNATURE  # noqa: E402
 
 #: The complete public surface of the backend. A new method here without a
 #: matching case below fails `test_no_untagged_code_path_exists`.
-BACKEND_METHODS = frozenset({"key", "unicode_char", "mouse_move", "mouse_button", "scroll"})
+BACKEND_METHODS = frozenset(
+    {"key", "unicode_char", "mouse_move", "mouse_move_absolute", "mouse_button", "scroll"}
+)
 
 
 @pytest.fixture
@@ -64,6 +66,7 @@ def test_every_event_type_is_tagged(captured: list[win32.INPUT]) -> None:
     backend.unicode_char("𝄞")  # astral: two surrogate events
     backend.unicode_char("\n")
     backend.mouse_move(3, -4)
+    backend.mouse_move_absolute(32768, 1024)
     for button in MouseButton:
         backend.mouse_button(button, down=True)
         backend.mouse_button(button, down=False)
@@ -91,3 +94,47 @@ def test_unicode_char_sends_a_surrogate_pair(captured: list[win32.INPUT]) -> Non
     SendInputBackend().unicode_char("𝄞")
     scans = [record.u.ki.wScan for record in captured]
     assert scans == [0xD834, 0xD834, 0xDD1E, 0xDD1E]  # down/up for each surrogate
+
+
+def test_an_absolute_move_spans_the_virtual_desktop(captured: list[win32.INPUT]) -> None:
+    """Without VIRTUALDESK, 0..65535 spans the *primary* monitor only: on a second
+    screen every absolute move would land on the wrong one."""
+    SendInputBackend().mouse_move_absolute(100, 200)
+    [record] = captured
+    flags = record.u.mi.dwFlags
+    wanted = win32.MOUSEEVENTF_MOVE | win32.MOUSEEVENTF_ABSOLUTE | win32.MOUSEEVENTF_VIRTUALDESK
+    assert flags & wanted == wanted
+    assert (record.u.mi.dx, record.u.mi.dy) == (100, 200)
+
+
+@pytest.mark.parametrize(
+    ("vk", "extended"),
+    [
+        (0x25, True),  # Left: MapVirtualKeyW reports the keypad-4 scan code for it
+        (0x2E, True),  # Delete
+        (0x24, True),  # Home
+        (0x22, True),  # Page Down
+        (0x5B, True),  # left Windows
+        (0x6F, True),  # keypad divide
+        (0xAD, True),  # volume mute (0xE0 prefix from Windows itself)
+        (0x64, False),  # keypad 4: the same scan code as Left, and *not* extended
+        (0x41, False),  # A
+        (0x0D, False),  # Enter on the main block
+    ],
+)
+def test_keys_carry_their_scan_code_and_extended_flag(
+    captured: list[win32.INPUT], vk: int, extended: bool
+) -> None:
+    SendInputBackend().key(vk, down=True)
+    [record] = captured
+    assert bool(record.u.ki.dwFlags & win32.KEYEVENTF_EXTENDEDKEY) is extended
+    assert record.u.ki.wScan == win32.scan_code(vk) & 0xFF
+    assert record.u.ki.wScan != 0
+
+
+def test_pause_is_sent_by_its_virtual_key_alone(captured: list[win32.INPUT]) -> None:
+    # Pause's scan code is E1 1D 45 — three bytes that do not fit `wScan`.
+    SendInputBackend().key(0x13, down=True)
+    [record] = captured
+    assert record.u.ki.wScan == 0
+    assert record.u.ki.wVk == 0x13
