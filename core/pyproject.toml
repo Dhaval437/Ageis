@@ -28,6 +28,9 @@ dependencies = [
   "pillow>=11.0",
   "psutil>=7.0",     # peer-PID check on connect (ARCHITECTURE.md § 3.1 step 5)
   "pydantic>=2.12",
+  # `guardian/rules.yaml` (P3-08). Read with `safe_load` only; the loader also pins the
+  # file's digest, so the rules the Guardian enforces are the ones that were reviewed.
+  "pyyaml>=6.0",
   # Windows' built-in OCR engine (P2-07), through the official WinRT projection:
   # one package per namespace the recogniser touches. Runs on this machine only.
   "winrt-runtime>=3.2",
@@ -45,6 +48,7 @@ dependencies = [
 dev = [
   "mypy>=1.18",
   "types-psutil>=7.0",
+  "types-PyYAML>=6.0",
   "pytest>=8.4",
   "pytest-asyncio>=1.2",
   "ruff>=0.14",

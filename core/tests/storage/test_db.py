@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import get_args
 
 import pytest
-from aegis_core.server.schemas import TaskState
+from aegis_core.server.schemas import Decision, RiskTier, TaskState
 from aegis_core.storage.db import StorageError, bootstrap, connect, migrate, schema_version
 from aegis_core.storage.migrations import MIGRATIONS, Migration
 from aegis_core.storage.migrations import m0001_initial as m0001
@@ -286,6 +286,19 @@ def test_the_task_status_check_is_exactly_the_wire_vocabulary() -> None:
     assert match is not None
     checked = re.findall(r"'([A-Z_]+)'", match.group(1))
     assert checked == list(get_args(TaskState))
+
+
+@pytest.mark.parametrize(
+    ("column", "vocabulary"),
+    [("risk", get_args(RiskTier)), ("decision", get_args(Decision))],
+)
+def test_the_step_checks_are_exactly_the_guardians_vocabulary(
+    column: str, vocabulary: tuple[str, ...]
+) -> None:
+    # `steps.risk` / `steps.decision` record what `Guardian.evaluate()` returned (P3-08).
+    match = re.search(rf"{column}\s+TEXT\s+CHECK \({column} IN \(([^)]*)\)\)", m0001.SQL)
+    assert match is not None
+    assert re.findall(r"'([A-Za-z_]+)'", match.group(1)) == list(vocabulary)
 
 
 @pytest.mark.parametrize("status", get_args(TaskState))

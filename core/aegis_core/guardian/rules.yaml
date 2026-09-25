@@ -1,0 +1,28 @@
+# The Guardian's rules (ARCHITECTURE.md § 8.1). Loaded by `guardian/rules.py`.
+#
+# This file is part of the build, not a setting: nothing in the UI reads or writes it,
+# and `rules.py` pins its SHA-256, so the Guardian refuses to load a copy that differs
+# from the one that was reviewed (REMEMBER.md invariant 5). Changing it means changing
+# `RULES_SHA256` in the same commit; the test that fails says what the new digest is.
+#
+# forbidden: never, no override, no setting. Each entry:
+#   id        lower-case words joined by '-', unique
+#   kind      path | command | registry
+#   access    any (the default) | write — `write` leaves reading alone
+#   patterns  one or more; see below
+#   reason    one sentence shown to the user. Never quotes what was matched.
+#
+# Patterns:
+#   path      a place: it matches the place and everything under it. `*` is a wildcard
+#             (and crosses folders). Allowed variables: %WINDIR% %SYSTEMROOT%
+#             %PROGRAMFILES% %PROGRAMFILES(X86)% %PROGRAMDATA% %APPDATA%
+#             %LOCALAPPDATA% %USERPROFILE%.
+#   command   a regular expression, searched case-insensitively in the command text.
+#   registry  a key: it matches the key and everything under it. `*` is a wildcard.
+#             HKLM / HKCU / HKCR / HKU / HKCC are accepted for the long hive names.
+#
+# The FORBIDDEN list itself — and a negative test for every entry — is P3-09.
+
+version: 1
+
+forbidden: []

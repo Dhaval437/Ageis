@@ -87,6 +87,16 @@ TaskState = Literal[
 `status` in every `task.status` event's payload. MAIN's watchdog (`P3-07`) reads it."""
 
 
+Autonomy = Literal["observe", "guided", "standard", "trusted"]
+"""The user's autonomy setting (`ARCHITECTURE.md § 10`). No level lets `DANGEROUS` run
+unattended; the Guardian enforces that whatever this says."""
+
+
+Decision = Literal["allow", "confirm", "deny"]
+"""What the Guardian decided for one tool call: `steps.decision`. Only `confirm` ever
+reaches the human; a `deny` is final for that call."""
+
+
 class StreamEvent(BaseModel):
     """One message on `WS /v1/stream` (`ARCHITECTURE.md § 9.2`)."""
 

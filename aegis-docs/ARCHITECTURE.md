@@ -104,7 +104,7 @@ aegis/
 │  │  ├─ tools/                   # registry.py + one module per tool family
 │  │  ├─ perception/              # display.py (+ win32.py), screen.py, uia_tree.py, redact.py, prune.py, mark.py, ocr.py, grounding.py, phash.py
 │  │  ├─ actuation/               # input.py (SendInput), window.py, preempt.py, killswitch.py
-│  │  ├─ guardian/                # policy.py, rules.yaml, risk.py, approvals.py
+│  │  ├─ guardian/                # policy.py, rules.yaml, rules.py, risk.py, approvals.py
 │  │  ├─ recovery/                # journal.py, undo.py, snapshot.py
 │  │  ├─ storage/                 # db.py, migrations/, audit.py, vault.py, usage.py, settings.py
 │  │  └─ telemetry/               # local metrics only; OFF by default
@@ -329,6 +329,8 @@ def evaluate(tool: Tool, params: dict, ctx: TaskContext) -> Verdict:
 - `FORBIDDEN` — never, no override, no setting: writes into `System32`/`Windows`/`Program Files`; touching `%APPDATA%\...\Login Data`, browser cookie/credential stores, `.ssh`, `.aws`, `.gnupg`, password-manager vaults, crypto wallet files; disabling Defender, firewall, UAC, or Aegis' own audit log; installing drivers or services; `format`, `bcdedit`, `vssadmin delete`, registry writes under `HKLM\...\Run`; exfiltrating the key vault; modifying files under the Aegis install dir.
 
 `guardian/rules.yaml` holds these as data, versioned and unit-tested. The FORBIDDEN list is compiled in and **cannot be edited from the UI**.
+
+*How (P3-08).* `guardian/policy.py`: `Guardian(rules).evaluate(tool, params, ctx) -> Verdict` (`decision`, effective `tier`, `stage` ∈ forbidden / unchecked / scope / tier, a `reason` that never quotes a target, the matching `rule_id`). A tool is anything with `name`, `risk` and **`targets(params)`** — the paths, commands and registry keys the call would touch, each marked `read` or `write` (a tool that cannot say, says `write`); the Guardian never takes a target from the model directly. Order: a tool declared FORBIDDEN, more than 64 targets, a target with no canonical form, or a target under a FORBIDDEN entry → `deny`; a path outside scope → `deny` to write, `confirm` to read (the default scope is empty until `P3-10`); then any anomaly signal raises the tier one step, `guardian/risk.py`'s table decides from tier × autonomy, and `echoes_observation` floors the answer at `confirm`. The table is `§ 10` cell by cell; `observe` allows only `SAFE`; no level allows `DANGEROUS`; escalation stops at `DANGEROUS`. `guardian/rules.py` loads `rules.yaml` with `yaml.safe_load` into a closed Pydantic schema (`forbidden: [{id, kind: path|command|registry, access: any|write, patterns, reason}]`) and **refuses a file whose SHA-256 is not the `RULES_SHA256` in its bytecode**, so an edited or missing copy is a Guardian that will not start. Path matching is on `canonical_path()` — realpath (junctions, symlinks, 8.3 names), `\\?\` stripped, trailing dots and spaces and alternate data streams collapsed, case folded — and a UNC path is **never opened** (resolving `\\host\share` would hand that host an SMB session and the user's NTLM hash). A pattern names a place and everything under it, never a longer name that starts with it. `§ 8.1`'s step 3, user always-allow rules, is deliberately **not** in this pipeline yet: with the table as it is, the only `confirm` it could relax is `DANGEROUS`, which it may not — `P3-11` designs it, after the signals.
 
 ### 8.2 Scoping: the agent has a *workspace*, not the whole disk
 

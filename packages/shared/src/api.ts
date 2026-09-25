@@ -57,6 +57,22 @@ export const TASK_STATES = [
 
 export type TaskState = (typeof TASK_STATES)[number];
 
+/**
+ * The user's autonomy setting (`ARCHITECTURE.md § 10`). No level lets `DANGEROUS` run
+ * unattended; the Guardian enforces that whatever this says.
+ */
+export const AUTONOMYS = ['observe', 'guided', 'standard', 'trusted'] as const;
+
+export type Autonomy = (typeof AUTONOMYS)[number];
+
+/**
+ * What the Guardian decided for one tool call: `steps.decision`. Only `confirm` ever
+ * reaches the human; a `deny` is final for that call.
+ */
+export const DECISIONS = ['allow', 'confirm', 'deny'] as const;
+
+export type Decision = (typeof DECISIONS)[number];
+
 /** `GET /v1/health` (`ARCHITECTURE.md § 9.1`). */
 export interface HealthResponse {
   /** Always `ok`; a core that cannot answer is down. */
