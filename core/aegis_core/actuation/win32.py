@@ -168,6 +168,9 @@ user32.PostThreadMessageW.argtypes = (
 )
 user32.PostThreadMessageW.restype = wintypes.BOOL
 
+user32.GetCursorPos.argtypes = (ctypes.POINTER(wintypes.POINT),)
+user32.GetCursorPos.restype = wintypes.BOOL
+
 user32.MapVirtualKeyW.argtypes = (wintypes.UINT, wintypes.UINT)
 user32.MapVirtualKeyW.restype = wintypes.UINT
 
@@ -197,6 +200,18 @@ def send_input(events: list[INPUT]) -> None:
     sent = user32.SendInput(len(events), array, ctypes.sizeof(INPUT))
     if sent != len(events):
         raise ctypes.WinError(ctypes.get_last_error())
+
+
+def cursor_pos() -> tuple[int, int] | None:
+    """`GetCursorPos`, or `None` when Windows refuses it (a secure desktop, a lock).
+
+    Physical pixels on the virtual desktop for a per-monitor-aware thread — the
+    same space `perception/display.py` measures everything in.
+    """
+    where = wintypes.POINT()
+    if not user32.GetCursorPos(ctypes.byref(where)):
+        return None
+    return int(where.x), int(where.y)
 
 
 def scan_code(vk: int) -> int:

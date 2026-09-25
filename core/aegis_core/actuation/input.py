@@ -21,11 +21,14 @@ Positions are physical pixels on the virtual desktop (`perception/display.py`,
 changed since the position was measured: a box from before a monitor was unplugged
 is exactly how a click lands somewhere nobody chose. Keys go out with the scan code
 Windows maps them to and the extended flag `keys.is_extended()` decides, so an app
-that reads scan codes sees the key that was meant. Human-like motion is `P3-03`.
+that reads scan codes sees the key that was meant. Given a `Motion` (`motion.py`,
+`P3-03`), the pointer travels a human-like path to its target and rests there
+before a press, so hover states have the moves and the moment they need.
 """
 
 from __future__ import annotations
 
+import random
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -52,9 +55,10 @@ from aegis_core.actuation.keys import (
     parse_combo,
 )
 from aegis_core.actuation.killswitch import KillSwitch
+from aegis_core.actuation.motion import Motion, duration, dwell, plan_path
 from aegis_core.actuation.preempt import PreemptSignal
 from aegis_core.actuation.signature import AEGIS_SIGNATURE
-from aegis_core.perception.display import DisplayLayout, Point, verify_layout
+from aegis_core.perception.display import DisplayLayout, OffScreenError, Point, verify_layout
 
 #: Re-exported: older callers import the modifier names from here.
 __all__ = [
@@ -239,6 +243,9 @@ class InputController:
         kill: KillSwitch | None = None,
         inter_event_delay: float = 0.002,
         layout_check: Callable[[DisplayLayout], DisplayLayout] = verify_layout,
+        motion: Motion | None = None,
+        cursor: Callable[[], Point | None] | None = None,
+        rng: random.Random | None = None,
     ) -> None:
         if inter_event_delay < 0:
             raise ValueError("inter_event_delay must not be negative")
@@ -250,6 +257,10 @@ class InputController:
         self._held_buttons: list[MouseButton] = []
         self._kill = kill
         self._layout_check = layout_check
+        #: `None` moves in one jump; the agent passes `motion.HUMAN`.
+        self._motion = motion
+        self._cursor = cursor if cursor is not None else _cursor_point
+        self._rng = rng if rng is not None else random.Random()  # noqa: S311 - motion, not secrets
         if kill is not None:
             kill.attach(self)
 
@@ -288,6 +299,15 @@ class InputController:
         elif self._delay:
             # No signal to wait on, so nothing to wake up for.
             time.sleep(self._delay)
+        self._checkpoint()
+
+    def _wait(self, seconds: float) -> None:
+        """Wait `seconds`, waking at once on preemption, then checkpoint."""
+        if seconds > 0:
+            if self._preempt is not None:
+                self._preempt.wait(seconds)
+            else:
+                time.sleep(seconds)
         self._checkpoint()
 
     @contextmanager
@@ -433,6 +453,44 @@ class InputController:
         current = self._layout_check(layout)
         return [current.to_absolute(point) for point in points]
 
+    def _travel(
+        self, layout: DisplayLayout, end: Point, *, start: Point | None = None, strict: bool = False
+    ) -> tuple[list[tuple[int, int]], float]:
+        """The moves that take the pointer to `end`, and the pause after each one.
+
+        With no `Motion`, or no known start, it is one jump. Otherwise a planned curve;
+        if the curve bows off every monitor, a straight line at the same pace; and if
+        even that crosses a dead zone, a jump — unless `strict` (a drag, where the
+        button is down the whole way), which refuses instead.
+        """
+        origin = start if start is not None else self._cursor()
+        if self._motion is None or origin is None:
+            return self._absolute(layout, end), 0.0
+        for motion in (self._motion, self._motion.straight()):
+            path = plan_path(origin, end, motion, self._rng)
+            try:
+                absolute = self._absolute(layout, *path)
+            except OffScreenError:
+                continue
+            total = duration(abs(end.x - origin.x) + abs(end.y - origin.y), motion)
+            return absolute, total / len(absolute)
+        if strict:
+            raise OffScreenError("The path between these points leaves every monitor.")
+        return self._absolute(layout, end), 0.0
+
+    def _run(self, moves: list[tuple[int, int]], pause: float) -> None:
+        for index, (ax, ay) in enumerate(moves):
+            self._backend.mouse_move_absolute(ax, ay)
+            if index < len(moves) - 1:
+                self._wait(pause)
+
+    def _settle(self) -> None:
+        """The rest before a press: a human dwell with `Motion`, one pace without."""
+        if self._motion is None:
+            self._pace()
+        else:
+            self._wait(dwell(self._motion, self._rng))
+
     def move_to(self, point: Point, layout: DisplayLayout) -> None:
         """Put the cursor on `point`, a physical pixel measured under `layout`.
 
@@ -440,8 +498,7 @@ class InputController:
         and `OffScreenError` if `point` is on no monitor. Nothing moves in either case.
         """
         with self._action():
-            [(ax, ay)] = self._absolute(layout, point)
-            self._backend.mouse_move_absolute(ax, ay)
+            self._run(*self._travel(layout, point))
 
     def click_at(
         self,
@@ -451,13 +508,12 @@ class InputController:
         button: MouseButton = MouseButton.LEFT,
         count: int = 1,
     ) -> None:
-        """Move to `point`, then click: single, double (`count=2`) or right."""
+        """Move to `point`, rest, then click: single, double (`count=2`) or right."""
         if count < 1:
             raise ValueError("count must be at least 1")
         with self._action():
-            [(ax, ay)] = self._absolute(layout, point)
-            self._backend.mouse_move_absolute(ax, ay)
-            self._pace()
+            self._run(*self._travel(layout, point))
+            self._settle()
             self.click(button, count=count)
 
     def drag_to(
@@ -469,31 +525,35 @@ class InputController:
         button: MouseButton = MouseButton.LEFT,
         steps: int = 8,
     ) -> None:
-        """Press at `start`, move to `end` in `steps` straight segments, release.
+        """Move to `start`, press, travel to `end`, release.
 
-        Every intermediate point is checked before the button goes down, so a drag
-        that would cross the gap between two monitors never starts.
+        Both legs are planned and checked before anything moves, so a drag that would
+        cross the gap between two monitors never starts. Without a `Motion` the drag
+        is `steps` straight segments.
         """
         if steps < 1:
             raise ValueError("steps must be at least 1")
-        path = [
-            Point(
-                start.x + (end.x - start.x) * index // steps,
-                start.y + (end.y - start.y) * index // steps,
-            )
-            for index in range(steps + 1)
-        ]
         with self._action():
-            absolute = self._absolute(layout, *path)
-            self._backend.mouse_move_absolute(*absolute[0])
-            self._pace()
+            approach, approach_pause = self._travel(layout, start)
+            if self._motion is None:
+                straight = [
+                    Point(
+                        start.x + (end.x - start.x) * index // steps,
+                        start.y + (end.y - start.y) * index // steps,
+                    )
+                    for index in range(1, steps + 1)
+                ]
+                drag, drag_pause = self._absolute(layout, *straight), self._delay
+            else:
+                drag, drag_pause = self._travel(layout, end, start=start, strict=True)
+            self._run(approach, approach_pause)
+            self._settle()
             self._backend.mouse_button(button, down=True)
             with self._lock:
                 self._held_buttons.append(button)
+            self._settle()
+            self._run(drag, drag_pause)
             self._pace()
-            for ax, ay in absolute[1:]:
-                self._backend.mouse_move_absolute(ax, ay)
-                self._pace()
             self._backend.mouse_button(button, down=False)
             with self._lock:
                 self._held_buttons.remove(button)
@@ -551,3 +611,8 @@ class InputController:
     def scroll(self, dx: int = 0, dy: int = 0) -> None:
         with self._action():
             self._backend.scroll(dx, dy)
+
+
+def _cursor_point() -> Point | None:
+    where = win32.cursor_pos()
+    return None if where is None else Point(*where)
