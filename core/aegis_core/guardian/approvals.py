@@ -150,8 +150,14 @@ class ApprovalBroker:
         prompt: str,
         why: str | None = None,
         task_id: str | None = None,
+        reversible: bool | None = None,
     ) -> Resolution:
-        """Ask the person about a `confirm`, and wait for them — or for the deadline."""
+        """Ask the person about a `confirm`, and wait for them — or for the deadline.
+
+        `reversible` is whether the tool has a real `undo()` (`P4-01`). Anything but
+        `True` makes the dialog say the action cannot be undone: the banner may only say
+        "recoverable" when it is (`UI.md § 5`, `RECOVERY.md` principle 2).
+        """
         if verdict.decision != "confirm":
             raise ValueError("Only a `confirm` verdict is asked about.")
         approval_id = next(self._ids)
@@ -176,6 +182,7 @@ class ApprovalBroker:
                 "allow_always": offer_rule,
                 "rule_kinds": self._kinds(offer_rule, folder, task_id),
                 "folder": folder,
+                "reversible": reversible is True,
             },
             task_id,
         )

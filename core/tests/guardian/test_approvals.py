@@ -107,6 +107,7 @@ def test_a_request_is_published_and_the_answer_returned() -> None:
         assert requested["approval_id"] == approval_id
         assert requested["prompt"] == "Read it"
         assert requested["timeout_s"] == TIMEOUT_S["SAFE"]
+        assert requested["reversible"] is False  # never "recoverable" unless told so
         resolution = broker.resolve(approval_id, "allow")
         assert (await task) == resolution
         assert resolution.allowed and resolution.decided_by == "user"

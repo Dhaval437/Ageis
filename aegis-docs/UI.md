@@ -177,6 +177,14 @@ Rules:
 - `Allow always ▾` opens a scoped choice: *this exact action* / *this tool in this folder* / *this tool for this task only*. Never a bare "allow everything forever". Every rule created here lands in the Rules screen where it can be revoked.
 - A **200 ms input-guard** disables the buttons on appear, so a click the user was already making cannot approve a deletion.
 
+*As built (P3-12)* — `components/ApprovalDialog.tsx`, mounted over the whole main window until its own always-on-top window exists (`P3-19`):
+- It is a function of the stream (`lib/approvals.ts`): it appears on `approval.requested` and closes on `approval.resolved`, which the core sends however the question ends. One question at a time, oldest first; every payload field is validated, and one that does not parse is never shown (the core then denies it by timeout).
+- **Deny is never disabled.** The input guard applies to *Allow once* and *Allow always* only, and restarts for every new question: denying is always safe, and Deny has the focus. `Esc` denies at any time.
+- The heading is the fixed "Aegis needs your approval" with the tier chip (word + icon + colour); the literal action — the tool's own `describe()` sentence — sits under it in mono, clipped at 280 characters with *Show all*, and the agent's reason is quoted after `Why:`.
+- The reversibility banner reads the event's `reversible` flag and shows the red *This cannot be undone* unless the core says `true`.
+- The countdown is display only, computed from the event's own timestamp so it agrees with the core's timer, which is the one that denies. A failed answer is announced in an `aria-live="assertive"` line.
+- `role="alertdialog"`, `aria-modal`, labelled heading, a Tab/Shift+Tab focus trap, focus returned on close, no transitions at all (the buttons override `Button`'s colour transition), and `app-no-drag` so the titlebar's drag region cannot steal a click on the dialog.
+
 ---
 
 ## 6. Overlay HUD (visible while the agent works)
