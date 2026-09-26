@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 from aegis_core.actuation.input import MouseButton
 from aegis_core.actuation.preempt import PreemptSignal
@@ -112,6 +113,177 @@ def inject_untagged_key(vk: int = VK_F24) -> None:
         )
         events.append(record)
     win32.send_input(events)
+
+
+#: Integrity-level RIDs (`winnt.h`). UIPI compares these.
+MEDIUM_INTEGRITY = 0x2000
+HIGH_INTEGRITY = 0x3000
+
+
+def process_integrity(pid: int) -> int | None:
+    """The integrity RID of `pid`'s token, or `None` if we may not read it."""
+    if sys.platform != "win32":  # pragma: no cover - guarded by the module skip
+        raise RuntimeError("Windows only")
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    advapi32.OpenProcessToken.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    )
+    advapi32.GetTokenInformation.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    advapi32.GetSidSubAuthorityCount.argtypes = (ctypes.c_void_p,)
+    advapi32.GetSidSubAuthorityCount.restype = ctypes.POINTER(ctypes.c_ubyte)
+    advapi32.GetSidSubAuthority.argtypes = (ctypes.c_void_p, wintypes.DWORD)
+    advapi32.GetSidSubAuthority.restype = ctypes.POINTER(wintypes.DWORD)
+
+    process_query_limited_information, token_query, token_integrity_level = 0x1000, 0x0008, 25
+    process = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not process:
+        return None
+    token = wintypes.HANDLE()
+    try:
+        if not advapi32.OpenProcessToken(process, token_query, ctypes.byref(token)):
+            return None
+        try:
+            buffer = ctypes.create_string_buffer(64)
+            size = wintypes.DWORD()
+            if not advapi32.GetTokenInformation(
+                token, token_integrity_level, buffer, len(buffer), ctypes.byref(size)
+            ):
+                return None
+            # TOKEN_MANDATORY_LABEL starts with SID_AND_ATTRIBUTES, whose first field is the SID.
+            sid = ctypes.c_void_p.from_buffer(buffer).value
+            count = advapi32.GetSidSubAuthorityCount(sid).contents.value
+            return int(advapi32.GetSidSubAuthority(sid, count - 1).contents.value)
+        finally:
+            kernel32.CloseHandle(token)
+    finally:
+        kernel32.CloseHandle(process)
+
+
+def foreground_outranks_us() -> str | None:
+    """Describe the focused window if UIPI walls it off from us, else `None`.
+
+    While a window of a higher integrity level than ours has focus (Task Manager,
+    an elevated terminal, a UAC prompt), Windows drops the keystrokes we inject and
+    does not call our low-level hook for them: measured, 0 of 5 reached the hook
+    with Task Manager in front, 5 of 5 without. A process whose token we may not
+    read at all is treated the same, since that is itself a sign it outranks us.
+    """
+    if sys.platform != "win32":  # pragma: no cover - guarded by the module skip
+        raise RuntimeError("Windows only")
+    import ctypes
+    import os
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+
+    window = user32.GetForegroundWindow()
+    if not window:
+        return None
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
+    ours, theirs = process_integrity(os.getpid()), process_integrity(pid.value)
+    if ours is not None and theirs is not None and theirs <= ours:
+        return None
+    title = ctypes.create_unicode_buffer(256)
+    user32.GetWindowTextW(window, title, len(title))
+    level = "unreadable" if theirs is None else f"{theirs:#06x}"
+    return f"{title.value!r} (pid {pid.value}, integrity {level}; ours {ours:#06x})"
+
+
+#: How long a missed keystroke may still turn up before we call it lost rather than late.
+LATE_S = 2.0
+
+
+class _Monitor(Protocol):
+    @property
+    def running(self) -> bool: ...
+
+
+def explain_miss(signal: PreemptSignal, monitor: _Monitor, sent_at: float) -> tuple[str, bool]:
+    """Why an injected, untagged keystroke did not preempt. Call it straight after the miss.
+
+    Returns the cause and whether it lies outside AEGIS (an environment the test
+    cannot run in, rather than a fault). The checks go from cheapest to most
+    intrusive, and each rules out the one before:
+
+    1. a higher-integrity window has focus — UIPI, the one cause measured to do it;
+    2. the key arrives late — the hook thread was starved;
+    3. the hook thread is dead;
+    4. a second key gets through — the first was eaten by a hook ahead of ours;
+    5. the second is lost too — the hook no longer fires (Windows unhooks a
+       callback that overruns `LowLevelHooksTimeout`, and says nothing).
+    """
+    blocker = foreground_outranks_us()
+    if blocker is not None:
+        return (
+            f"a window of higher integrity has focus, so UIPI withholds our input: {blocker}",
+            True,
+        )
+    if signal.wait(LATE_S):
+        last = signal.last
+        late_ms = (last.at - sent_at) * 1000 if last is not None else float("nan")
+        return f"the key arrived {late_ms:.0f} ms late: the hook thread was starved", False
+    if not monitor.running:
+        return "the hook thread is dead", False
+    inject_untagged_key()
+    if signal.wait(DELIVERY_RETRY_S):
+        return (
+            "one keystroke was eaten: a second got through, "
+            "so a hook ahead of ours swallowed the first",
+            False,
+        )
+    return (
+        "the hook no longer fires though its thread is alive: Windows removed it "
+        "(LowLevelHooksTimeout) or input is blocked",
+        False,
+    )
+
+
+#: How long `explain_miss` gives its second keystroke.
+DELIVERY_RETRY_S = 0.25
+
+
+def skip_if_walled_off() -> None:
+    """Skip a live test up front when UIPI would withhold every key it sends."""
+    import pytest
+
+    blocker = foreground_outranks_us()
+    if blocker is not None:
+        pytest.skip(
+            f"a window of higher integrity has focus, so UIPI withholds our input: {blocker}"
+        )
+
+
+def expect_preempted(
+    signal: PreemptSignal, monitor: _Monitor, sent_at: float, wait_s: float
+) -> None:
+    """Assert the key sent at `sent_at` preempted; on a miss, say why, and skip if not ours."""
+    import pytest
+
+    if signal.wait(wait_s):
+        return
+    cause, environmental = explain_miss(signal, monitor, sent_at)
+    if environmental:
+        pytest.skip(f"untagged input could not be tested: {cause}")
+    pytest.fail(f"untagged input did not preempt within {wait_s * 1000:.0f} ms: {cause}")
 
 
 def wait_until(

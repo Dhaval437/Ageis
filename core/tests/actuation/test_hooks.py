@@ -39,10 +39,16 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="needs Win32 low
 
 from aegis_core.actuation import win32  # noqa: E402
 from aegis_core.actuation.input import SendInputBackend  # noqa: E402
-from aegis_core.actuation.preempt import InputMonitor, PreemptSignal  # noqa: E402
+from aegis_core.actuation.preempt import InputMonitor, PreemptEvent, PreemptSignal  # noqa: E402
 from aegis_core.actuation.signature import AEGIS_SIGNATURE  # noqa: E402
 
-from tests.actuation.helpers import VK_F24, inject_untagged_key, settle  # noqa: E402
+from tests.actuation import helpers  # noqa: E402
+from tests.actuation.helpers import (  # noqa: E402
+    VK_F24,
+    expect_preempted,
+    inject_untagged_key,
+    settle,
+)
 
 #: Injections per latency sample. Enough to be meaningful, quick enough to run
 #: on every commit.
@@ -201,6 +207,8 @@ def test_synthetic_keystrokes_do_not_preempt(
     signal: PreemptSignal, keys_only: InputMonitor
 ) -> None:
     """The whole preemption design rests on this one, through the real input queue."""
+    # Behind an elevated window nothing is delivered, and silence would pass this.
+    helpers.skip_if_walled_off()
     backend = SendInputBackend()
     assert settle(signal), "someone was typing during the run"
 
@@ -214,9 +222,10 @@ def test_synthetic_keystrokes_do_not_preempt(
 
 def test_untagged_input_preempts(signal: PreemptSignal, keys_only: InputMonitor) -> None:
     assert settle(signal), "someone was typing during the run"
+    sent_at = time.perf_counter()
     inject_untagged_key()
 
-    assert signal.wait(DELIVERY_S), "untagged input did not preempt"
+    expect_preempted(signal, keys_only, sent_at, DELIVERY_S)
     event = signal.last
     assert event is not None
     assert event.source == "keyboard"
@@ -233,7 +242,7 @@ def test_the_callback_sets_the_signal_within_5ms(
         assert settle(signal), "someone was typing during the run"
         sent_at = time.perf_counter()
         inject_untagged_key()
-        assert signal.wait(DELIVERY_S), "untagged input did not preempt"
+        expect_preempted(signal, keys_only, sent_at, DELIVERY_S)
         event = signal.last
         assert event is not None
         latencies_ms.append((event.at - sent_at) * 1000)
@@ -256,6 +265,7 @@ def test_synthetic_mouse_events_do_not_preempt_on_an_idle_machine(
     is the guard that cannot be skipped; this one adds the real input queue when
     the machine is quiet enough to offer it.
     """
+    helpers.skip_if_walled_off()  # silence would pass this too
     backend = SendInputBackend()
     with InputMonitor(signal) as monitor:
         for _ in range(ATTEMPTS):
@@ -274,13 +284,16 @@ def test_signature_is_configurable_and_is_what_the_hook_compares(
     signal: PreemptSignal,
 ) -> None:
     """Point the monitor at a signature we never send: our own events now preempt."""
+    helpers.skip_if_walled_off()
     with InputMonitor(signal, watch_mouse=False, signature=0x0BADF00D) as monitor:
         assert settle(signal), "someone was typing during the run"
         backend = SendInputBackend()
         backend.key(VK_F24, down=True)
         backend.key(VK_F24, down=False)  # never leave a key down (invariant 3)
 
-        assert signal.wait(DELIVERY_S), "the hook is not comparing dwExtraInfo at all"
+        # Not `expect_preempted`: its second, untagged key would get through a hook
+        # that ignores the configured signature and blame the first on "eaten".
+        assert signal.wait(DELIVERY_S), "the hook is not comparing the configured signature"
         assert monitor.callback_errors == 0
 
 
@@ -291,10 +304,138 @@ def test_listeners_run_off_the_hook_thread(signal: PreemptSignal, keys_only: Inp
 
     assert settle(signal), "someone was typing during the run"
     with signal.watch():
+        sent_at = time.perf_counter()
         inject_untagged_key()
-        assert signal.wait(DELIVERY_S)
+        expect_preempted(signal, keys_only, sent_at, DELIVERY_S)
         deadline = time.perf_counter() + 2.0
         while not seen and time.perf_counter() < deadline:
             time.sleep(0.005)
 
     assert seen == ["aegis-preempt-watch"]
+
+
+# ---------------------------------------------------------------------------
+# When a live test misses: the miss must name its cause (P3-16).
+# ---------------------------------------------------------------------------
+
+
+class _Stub:
+    """A monitor as `explain_miss` sees it: only whether its thread is alive."""
+
+    def __init__(self, running: bool) -> None:
+        self.running = running
+
+
+@pytest.fixture
+def focus_is_ours(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rule out UIPI, so each test reaches the branch it is about."""
+    monkeypatch.setattr(helpers, "foreground_outranks_us", lambda: None)
+
+
+def test_a_miss_behind_an_elevated_window_is_blamed_on_uipi(
+    monkeypatch: pytest.MonkeyPatch, signal: PreemptSignal
+) -> None:
+    monkeypatch.setattr(helpers, "foreground_outranks_us", lambda: "'Task Manager' (pid 1)")
+    cause, environmental = helpers.explain_miss(signal, _Stub(running=True), time.perf_counter())
+    assert environmental
+    assert "UIPI" in cause and "Task Manager" in cause
+
+
+def test_an_elevated_window_skips_rather_than_fails(
+    monkeypatch: pytest.MonkeyPatch, signal: PreemptSignal
+) -> None:
+    monkeypatch.setattr(helpers, "foreground_outranks_us", lambda: "'Task Manager' (pid 1)")
+    with pytest.raises(pytest.skip.Exception, match="UIPI"):
+        helpers.expect_preempted(signal, _Stub(running=True), time.perf_counter(), 0.01)
+
+
+@pytest.mark.usefixtures("focus_is_ours")
+def test_a_late_key_is_blamed_on_a_starved_thread(signal: PreemptSignal) -> None:
+    sent_at = time.perf_counter()
+    late = threading.Timer(
+        0.3, signal.trigger, (PreemptEvent("keyboard", win32.WM_KEYDOWN, sent_at + 0.3),)
+    )
+    late.start()
+    try:
+        cause, environmental = helpers.explain_miss(signal, _Stub(running=True), sent_at)
+    finally:
+        late.cancel()
+    assert not environmental
+    assert "300 ms late" in cause and "starved" in cause
+
+
+@pytest.mark.usefixtures("focus_is_ours")
+def test_a_dead_thread_is_named(monkeypatch: pytest.MonkeyPatch, signal: PreemptSignal) -> None:
+    monkeypatch.setattr(helpers, "LATE_S", 0.01)
+    cause, environmental = helpers.explain_miss(signal, _Stub(running=False), time.perf_counter())
+    assert not environmental
+    assert cause == "the hook thread is dead"
+
+
+def test_a_key_that_gets_through_the_second_time_was_eaten(
+    monkeypatch: pytest.MonkeyPatch, signal: PreemptSignal, keys_only: InputMonitor
+) -> None:
+    """A real hook, and a first key that "never arrived": the second one does."""
+    helpers.skip_if_walled_off()  # the real check, before it is stubbed out below
+    monkeypatch.setattr(helpers, "foreground_outranks_us", lambda: None)
+    monkeypatch.setattr(helpers, "LATE_S", 0.01)
+    assert settle(signal), "someone was typing during the run"
+    cause, environmental = helpers.explain_miss(signal, keys_only, time.perf_counter())
+    assert not environmental
+    assert "eaten" in cause
+
+
+@pytest.mark.usefixtures("focus_is_ours")
+def test_a_hook_that_no_longer_fires_is_named(
+    monkeypatch: pytest.MonkeyPatch, signal: PreemptSignal
+) -> None:
+    """No hook behind this signal at all: the second key is lost too."""
+    monkeypatch.setattr(helpers, "LATE_S", 0.01)
+    cause, environmental = helpers.explain_miss(signal, _Stub(running=True), time.perf_counter())
+    assert not environmental
+    assert "no longer fires" in cause
+
+
+@pytest.mark.usefixtures("focus_is_ours")
+def test_a_miss_that_is_ours_fails_with_its_cause(
+    monkeypatch: pytest.MonkeyPatch, signal: PreemptSignal
+) -> None:
+    monkeypatch.setattr(helpers, "LATE_S", 0.01)
+    with pytest.raises(pytest.fail.Exception, match="within 10 ms: the hook thread is dead"):
+        helpers.expect_preempted(signal, _Stub(running=False), time.perf_counter(), 0.01)
+
+
+def test_our_own_integrity_is_readable_and_ordinary() -> None:
+    """The comparison rests on reading a token; ours must read as medium or high."""
+    import os
+
+    level = helpers.process_integrity(os.getpid())
+    assert level in (helpers.MEDIUM_INTEGRITY, helpers.HIGH_INTEGRITY)
+
+
+def test_a_process_that_does_not_exist_has_no_integrity() -> None:
+    assert helpers.process_integrity(0xFFFFFFF0) is None
+
+
+@pytest.mark.parametrize(
+    ("theirs", "walled_off"),
+    [
+        (helpers.MEDIUM_INTEGRITY, False),
+        (helpers.MEDIUM_INTEGRITY - 0x1000, False),
+        (helpers.HIGH_INTEGRITY, True),
+        (None, True),
+    ],
+    ids=["same", "lower", "higher", "unreadable"],
+)
+def test_only_a_window_that_outranks_us_is_walled_off(
+    monkeypatch: pytest.MonkeyPatch, theirs: int | None, walled_off: bool
+) -> None:
+    import os
+
+    ours = os.getpid()
+    monkeypatch.setattr(
+        helpers,
+        "process_integrity",
+        lambda pid: helpers.MEDIUM_INTEGRITY if pid == ours else theirs,
+    )
+    assert (helpers.foreground_outranks_us() is not None) == walled_off
