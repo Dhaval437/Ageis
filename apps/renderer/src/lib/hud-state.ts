@@ -1,12 +1,15 @@
 import type { StreamSnapshot } from '@/stores/stream';
 import { pendingApprovals, type PendingApproval } from '@/lib/approvals';
+import { currentStop } from '@/lib/stop';
 
 /**
  * What the OverlayHUD says (`UI.md § 6`, P3-13), derived from the event stream and
  * nothing else (REMEMBER.md invariant 15).
  *
- * In order of precedence: an engine that is not there, then a question waiting for
- * the person, then the latest task's state. An approval outranks the task because
+ * In order of precedence: a kill-switch press no task has moved past (P3-14) — it
+ * outranks the engine, because a terminated engine is restarting *because* of it —
+ * then an engine that is not there, then a question waiting for the person, then
+ * the latest task's state. An approval outranks the task because
  * the task is waiting on it, and the person has to see that first.
  */
 
@@ -50,6 +53,7 @@ function latestAction(snapshot: StreamSnapshot): string | null {
 }
 
 export function hudState(snapshot: StreamSnapshot): HudState {
+  if (currentStop(snapshot) !== null) return { kind: 'stopped', failed: false };
   if (snapshot.connection === null || snapshot.connection === 'connecting') {
     return snapshot.hasBeenLive ? { kind: 'offline' } : { kind: 'connecting' };
   }

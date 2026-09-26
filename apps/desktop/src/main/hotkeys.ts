@@ -233,7 +233,7 @@ export function createHotkeyService(options: HotkeyServiceOptions): KillSwitchHo
     get: (): HotkeyMap => {
       if (!isArmed) {
         throw new Error(
-          `The kill switch is not armed: another program is using ${displayAccelerator(binding)}. Choose a different shortcut.`,
+          `The kill switch is not armed: another program is using ${displayAccelerator(binding)}.`,
         );
       }
       return { killSwitch: binding };

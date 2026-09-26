@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from 'react';
+import { useEffect, useState, type ReactElement } from 'react';
 import {
   Copy,
   Cpu,
@@ -14,10 +14,12 @@ import {
 } from 'lucide-react';
 import { ApprovalDialog } from '@/components/ApprovalDialog';
 import { EngineUnavailable } from '@/components/EngineUnavailable';
+import { KillSwitchBar } from '@/components/KillSwitchBar';
 import { ModelsScreen } from '@/components/models/ModelsScreen';
 import { Button } from '@/components/ui/button';
 import { engineStatusView } from '@/lib/engine-status';
 import { cn } from '@/lib/utils';
+import { checkKillSwitch } from '@/stores/kill-switch';
 import { useStreamStore } from '@/stores/stream';
 import { useWindowStore } from '@/stores/window';
 
@@ -55,27 +57,37 @@ export function AppShell(): ReactElement {
   // `UI.md § 9`, "Core not running": the recovery card takes the whole panel,
   // because nothing else in it can do anything while the engine is gone.
   const engineGone = useStreamStore((state) => state.connection) === 'unavailable';
+  // Once per window: whether the kill switch's shortcut is really registered (P3-14).
+  useEffect(() => {
+    void checkKillSwitch();
+  }, []);
 
   return (
     <div className="flex h-full flex-col bg-bg text-text">
       <Titlebar />
       <div className="flex min-h-0 flex-1">
         <Rail activeId={active.id} onSelect={setActiveId} />
-        <main
-          className={cn(
-            'flex min-w-0 flex-1 border-r border-border',
-            // A screen with content fills the panel; a placeholder is centred in it.
-            engineGone || active.id !== 'models' ? 'items-center justify-center' : 'items-stretch',
-          )}
-          aria-live="polite"
-        >
-          {engineGone ? (
-            <EngineUnavailable />
-          ) : active.id === 'models' ? (
-            <ModelsScreen />
-          ) : (
-            <p className="p-6 text-base text-text-dim">{active.empty}</p>
-          )}
+        <main className="flex min-w-0 flex-1 flex-col border-r border-border">
+          {/* `UI.md § 7`: what the kill switch did, over whichever section is open. */}
+          <KillSwitchBar />
+          <div
+            className={cn(
+              'flex min-h-0 flex-1',
+              // A screen with content fills the panel; a placeholder is centred in it.
+              engineGone || active.id !== 'models'
+                ? 'items-center justify-center'
+                : 'items-stretch',
+            )}
+            aria-live="polite"
+          >
+            {engineGone ? (
+              <EngineUnavailable />
+            ) : active.id === 'models' ? (
+              <ModelsScreen />
+            ) : (
+              <p className="p-6 text-base text-text-dim">{active.empty}</p>
+            )}
+          </div>
         </main>
         <LiveView />
       </div>

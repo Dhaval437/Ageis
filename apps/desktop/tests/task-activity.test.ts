@@ -105,4 +105,33 @@ describe('createTaskActivity', () => {
     activity.observe(status('late', 'RUNNING'));
     expect(activity.running()).toBe(true);
   });
+
+  describe('active (P3-14)', () => {
+    it.each(['QUEUED', 'RUNNING', 'PAUSED_BY_USER', 'WAITING_APPROVAL'])(
+      'counts %s as active',
+      (state) => {
+        const activity = createTaskActivity();
+        activity.observe(status('1', state));
+        expect(activity.active()).toBe(true);
+      },
+    );
+
+    it.each(['DONE', 'FAILED', 'STOPPED', 'ABANDONED'])('counts %s as finished', (state) => {
+      const activity = createTaskActivity();
+      activity.observe(status('1', 'RUNNING'));
+      activity.observe(status('1', state));
+      expect(activity.active()).toBe(false);
+    });
+
+    it('stays active while any task is, and a reset clears it', () => {
+      const activity = createTaskActivity();
+      activity.observe(status('1', 'PAUSED_BY_USER'));
+      activity.observe(status('2', 'RUNNING'));
+      activity.observe(status('2', 'DONE'));
+      expect(activity.active()).toBe(true);
+      expect(activity.running()).toBe(false);
+      activity.observe({ kind: 'reset' });
+      expect(activity.active()).toBe(false);
+    });
+  });
 });

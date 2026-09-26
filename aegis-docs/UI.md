@@ -208,7 +208,7 @@ Rules:
 - It is **excluded from screen capture** (`setContentProtection` → `WDA_EXCLUDEFROMCAPTURE`): verified on this machine, the core's own capture of the HUD's rectangle shows the window behind it, not the HUD and not a black box.
 - Frameless, transparent, always on top at `screen-saver` level, **never focusable** and shown without activation, so it cannot take keystrokes from the app the agent drives. 420×64, top-centre of the primary work area, draggable by its body.
 - It shows the one-line status (connecting / offline / waiting for you / the current action / paused / stopped / ready) with amber for a question or a pause and red for a stop or an offline engine; the approval state has **Deny** and **Review** and never Allow; **■ Stop** is the kill switch; `⌃` and a double-click open the main window. There is no ⏸ button: touching the mouse *is* pause, and Resume is `P3-14`. The recent-steps strip waits for `P4-11`'s steps.
-- Nothing shows it automatically yet: `window.setOverlay(true)` does, and deciding when (a task starts, the main window hides) is `P3-14`'s.
+- *When it shows (P3-14, `main/hud-visibility.ts`):* whenever a task becomes active (queued, running, paused by you, waiting on an approval), whether or not the main window is visible — the main window may be behind the very app the agent drives. It hides when no task is active. After a kill-switch press it shows "Stopped by you." for 4 s, then hides unless a task is still active. It acts on changes only, so `window.setOverlay` still works by hand in between.
 
 ---
 
@@ -226,6 +226,12 @@ The behaviour from `ARCHITECTURE.md § 8.3`, expressed in UI:
 5. If the user types into the composer in the main window while a task runs, that is *also* preemption — the message becomes a mid-run instruction and the agent pauses to read it.
 
 **Kill switch feedback:** on hotkey, a full-screen 400 ms red edge-flash, all input released, HUD collapses to `■ Stopped by you`, and the main window comes forward showing the last five actions with an **Undo last N** button. The user must be able to see, in one glance, what the agent had just done.
+
+*As built (P3-14):*
+- Everything above runs **after** the stop completes, never before or during it: creating a window blocks MAIN's event loop, which is what runs the kill switch's 100 ms deadline. Measured on the built app: acknowledged in 4.9 ms, flash windows up within ~150 ms and gone within ~600 ms.
+- The flash is one transparent window per display (`main/flash.ts`): no preload, **JavaScript disabled**, a `data:` page with `default-src 'none'`, click-through, never focusable, excluded from capture. `prefers-reduced-motion` makes it a static border for the same 400 ms.
+- The main window shows **`KillSwitchBar`** (`§ 12`) at the top of the conversation panel: "Stopped by you." with what the stop did ("Aegis stopped in 5 ms and let go of the keyboard and mouse." / the engine did not answer and was ended / nothing was running), and *Dismiss*. It goes when a task goes again. The same bar warns, undismissably, when the shortcut is **unarmed** — "The stop shortcut isn't working." with MAIN's reason and "stop Aegis from its tray icon" — and the tray item then reads *Stop the agent (shortcut not working)*.
+- **Not yet:** the last five actions (`P4-11`, which builds the steps), *Undo last N* (`P6-03`), *Resume* (`P4-08`), *Resume with a note* and composer-typing-as-preemption (`P4-09`). Each needs a backend that does not exist; a button with nothing behind it would be a silent failure.
 
 ---
 

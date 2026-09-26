@@ -19,6 +19,7 @@ const IDLE: TrayMenuState = {
   windowVisible: true,
   taskRunning: false,
   killSwitch: DEFAULT_KILL_SWITCH,
+  killSwitchArmed: true,
 };
 const RUNNING: TrayMenuState = { ...IDLE, taskRunning: true };
 
@@ -75,5 +76,15 @@ describe('buildTrayMenuTemplate', () => {
     expect(spies.toggleWindow).toHaveBeenCalledOnce();
     expect(spies.stopAgent).toHaveBeenCalledOnce();
     expect(spies.quit).toHaveBeenCalledOnce();
+  });
+
+  it('says when the shortcut is not working, and shows no shortcut that does nothing (P3-14)', () => {
+    const unarmed = { ...RUNNING, killSwitchArmed: false };
+    const item = labelled(unarmed, 'Stop the agent (shortcut not working)');
+    expect(item).toBeDefined();
+    expect(item?.accelerator).toBeUndefined();
+    // The tray item is the way to stop when the shortcut is not, so it still works.
+    expect(item?.enabled).toBe(true);
+    expect(labelled(unarmed, 'Stop the agent')).toBeUndefined();
   });
 });

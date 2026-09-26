@@ -6,4 +6,4 @@ packages:
 allowBuilds:
   electron: true
   esbuild: true
-  koffi: set this to true or false
+  koffi: false  # the binary comes from the prebuilt @koromix/koffi-win32-x64; no build

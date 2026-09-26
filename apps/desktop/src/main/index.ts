@@ -8,12 +8,13 @@
  * Landed so far: window, frameless shell for the custom titlebar, tray, the
  * single-instance lock (P0-02), the preload bridge (P0-04), the core
  * supervisor (P0-07), the event stream forwarded to the renderer (P0-09), the
- * kill switch (P3-06), the watchdog (P3-07) and the OverlayHUD (P3-13).
+ * kill switch (P3-06), the watchdog (P3-07), the OverlayHUD (P3-13) and what the
+ * person sees when they stop the agent (P3-14).
  */
 
 import { app, globalShortcut } from 'electron';
 import type { BrowserWindow } from 'electron';
-import type { BridgeResult } from '@aegis/shared';
+import type { BridgeResult, CoreStreamMessage } from '@aegis/shared';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createMainWindow } from './window.js';
@@ -32,6 +33,9 @@ import { createCoreStream, type CoreAvailability, type CoreStream } from './core
 import { createTaskActivity } from './task-activity.js';
 import { createWatchdog, type Watchdog, type WatchdogReport } from './watchdog.js';
 import { createOverlay, type Overlay } from './overlay.js';
+import { createHudVisibility, type HudVisibility } from './hud-visibility.js';
+import { createStopFeedback, type StopFeedback } from './stop-feedback.js';
+import { flashScreens } from './flash.js';
 import { describeRelease, releaseModifiers } from './modifier-release.js';
 import { nativeKeyInput } from './win-input.js';
 import {
@@ -52,6 +56,8 @@ let coreStream: CoreStream | null = null;
 let killSwitch: KillSwitch | null = null;
 let watchdog: Watchdog | null = null;
 let overlay: Overlay | null = null;
+let hudVisibility: HudVisibility | null = null;
+let stopFeedback: StopFeedback | null = null;
 /** Whether a task is running, learnt from the stream MAIN forwards (P3-07). */
 const taskActivity = createTaskActivity();
 let hotkeys: KillSwitchHotkeys | null = null;
@@ -59,6 +65,7 @@ let trayState: TrayMenuState = {
   windowVisible: false,
   taskRunning: false,
   killSwitch: DEFAULT_KILL_SWITCH,
+  killSwitchArmed: false,
 };
 
 function setTrayState(patch: Partial<TrayMenuState>): void {
@@ -152,6 +159,8 @@ function bootstrap(): void {
     // First, so a core being stopped on purpose is never mistaken for a hung one.
     watchdog?.stop();
     watchdog = null;
+    hudVisibility?.dispose();
+    hudVisibility = null;
     overlay?.dispose();
     overlay = null;
     tray?.destroy();
@@ -175,9 +184,17 @@ function bootstrap(): void {
       // channel that is not there yet during its first paint.
       coreStream = createCoreStream({
         deliver: (message) => {
-          taskActivity.observe(message);
-          bridge?.send.coreEvent(message);
-          overlay?.send(message);
+          forward(message);
+          // After a reset, "Stopped by you" again: the new core knows nothing of it.
+          stopFeedback?.observe(message);
+        },
+      });
+      stopFeedback = createStopFeedback({
+        deliver: forward,
+        flash: flashScreens,
+        showMain: showMainWindow,
+        onStopped: () => {
+          hudVisibility?.stopped();
         },
       });
       supervisor = createCoreSupervisor();
@@ -188,7 +205,11 @@ function bootstrap(): void {
       killSwitch = createKillSwitch({
         gateway: () => supervisor?.gateway() ?? null,
         terminate: () => supervisor?.terminate('kill-switch') ?? Promise.resolve(false),
-        onReport: logKillReport,
+        // The person's receipt runs only once the stop itself has finished.
+        onReport: (report) => {
+          logKillReport(report);
+          stopFeedback?.reported(report);
+        },
         releaseModifiers: releaseHeldModifiers,
       });
       // The other half of "a hung agent is never a still-clicking agent": the
@@ -218,6 +239,12 @@ function bootstrap(): void {
           coreStream?.restart();
         },
       });
+      hudVisibility = createHudVisibility({
+        setVisible: (visible) => {
+          overlay?.setVisible(visible);
+        },
+        taskActive: taskActivity.active,
+      });
       hotkeys = createHotkeyService({
         registry: globalShortcut,
         store: createFileHotkeyStore(hotkeysFile(process.env, homedir())),
@@ -225,10 +252,11 @@ function bootstrap(): void {
           void killSwitch?.trigger();
         },
         onChange: (map) => {
-          setTrayState({ killSwitch: map.killSwitch });
+          setTrayState({ killSwitch: map.killSwitch, killSwitchArmed: true });
         },
       });
       hotkeys.arm();
+      setTrayState({ killSwitchArmed: hotkeys.armed() });
 
       bridge = registerBridgeIpc({
         getWindow: () => mainWindow,
@@ -290,6 +318,14 @@ function bootstrap(): void {
     });
 }
 
+/** One stream message to everything in MAIN and every page that follows the stream. */
+function forward(message: CoreStreamMessage): void {
+  taskActivity.observe(message);
+  bridge?.send.coreEvent(message);
+  overlay?.send(message);
+  hudVisibility?.observe();
+}
+
 /**
  * Build the supervisor for this session.
  *
@@ -318,7 +354,7 @@ function createCoreSupervisor(): Supervisor {
 
 /**
  * One line per press, and never anything from the core's body beyond a count.
- * The renderer's "Stopped by you" is P3-14's; this is for the log a user sends.
+ * What the person sees is `stop-feedback.ts`; this is for the log a user sends.
  */
 function logKillReport(report: KillReport): void {
   const elapsed = report.elapsedMs.toFixed(1);

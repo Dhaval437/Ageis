@@ -528,6 +528,7 @@ pushes a `CoreStreamMessage` envelope over the `aegis:core:event` channel:
 | `event` | one `§ 9.2` event, as `unknown` | validates it (`lib/stream-event.ts`), applies it if `seq` is new |
 | `reset` | nothing | drops everything derived from the stream; a full replay follows |
 | `connection` | `connecting` / `live` / `down` / `unavailable` | shows it; `unavailable` drives P0-17's screen |
+| `stopped` | a `KillSwitchStop`: `at` (ISO UTC), `outcome` (`acknowledged` / `terminated` / `no-core`), `elapsedMs` | P3-14. MAIN's own fact, sent to the main window **and** the HUD when a kill-switch press completes, and **again after every `reset`** (a terminated core's replacement resets the stream). The renderer keeps it across a reset and treats it as current until a `task.status` in `QUEUED`/`RUNNING`/`PAUSED_BY_USER`/`WAITING_APPROVAL` **with a later `ts`** arrives, so the replay of older events cannot clear it |
 
 **`window.maximize` / `window.onMaximizedChange`** (P0-15). `maximize()` is one
 toggle, not a maximise/restore pair: MAIN owns the window, so it decides which

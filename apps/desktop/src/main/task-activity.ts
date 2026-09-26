@@ -11,6 +11,9 @@
  * the agent moves the mouse; paused, waiting for an approval or queued, a
  * stalled core is not a clicking one.
  *
+ * `active()` is wider, for the OverlayHUD (P3-14): a task that is queued, running,
+ * paused by the person or waiting on an approval is one they need to see.
+ *
  * A `reset` clears everything, because it means a new core (whose tasks start
  * from nothing) or a replay from scratch that will say it all again.
  *
@@ -31,7 +34,17 @@ export interface TaskActivity {
   readonly observe: (message: CoreStreamMessage) => void;
   /** `true` while any task's last reported state is `RUNNING`. */
   readonly running: () => boolean;
+  /** `true` while any task's last reported state is one it has not finished in. */
+  readonly active: () => boolean;
 }
+
+/** The states a task is still going in: not finished, whether or not it is moving. */
+const ACTIVE_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
+  'QUEUED',
+  'RUNNING',
+  'PAUSED_BY_USER',
+  'WAITING_APPROVAL',
+]);
 
 function isTaskState(value: unknown): value is TaskState {
   return typeof value === 'string' && (TASK_STATES as readonly string[]).includes(value);
@@ -49,22 +62,27 @@ function taskStatus(event: unknown): { taskId: string; status: TaskState } | nul
 
 export function createTaskActivity(): TaskActivity {
   const running = new Set<string>();
+  const active = new Set<string>();
+
+  function track(set: Set<string>, taskId: string, member: boolean): void {
+    if (!member) set.delete(taskId);
+    else if (set.size < MAX_TRACKED) set.add(taskId);
+  }
 
   return {
     observe: (message) => {
       if (message.kind === 'reset') {
         running.clear();
+        active.clear();
         return;
       }
       if (message.kind !== 'event') return;
       const update = taskStatus(message.event);
       if (update === null) return;
-      if (update.status !== 'RUNNING') {
-        running.delete(update.taskId);
-        return;
-      }
-      if (running.size < MAX_TRACKED) running.add(update.taskId);
+      track(running, update.taskId, update.status === 'RUNNING');
+      track(active, update.taskId, ACTIVE_STATES.has(update.status));
     },
     running: () => running.size > 0,
+    active: () => active.size > 0,
   };
 }

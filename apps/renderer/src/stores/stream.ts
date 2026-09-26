@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { CoreConnection, StreamEvent } from '@aegis/shared';
+import type { CoreConnection, KillSwitchStop, StreamEvent } from '@aegis/shared';
 import { parseStreamMessage } from '@/lib/stream-event';
 
 /**
@@ -26,6 +26,12 @@ export interface StreamSnapshot {
   readonly events: readonly StreamEvent[];
   /** Messages that failed validation. Non-zero means a bug; never shown as data. */
   readonly rejected: number;
+  /**
+   * The last kill-switch press, from MAIN (P3-14). **Kept across a reset**: it is
+   * MAIN's fact, not the core's, and a terminated core's replacement resets the
+   * stream. Whether it is still current is `lib/stop.ts`'s question.
+   */
+  readonly stop: KillSwitchStop | null;
 }
 
 export const INITIAL_STREAM: StreamSnapshot = {
@@ -34,6 +40,7 @@ export const INITIAL_STREAM: StreamSnapshot = {
   lastSeq: 0,
   events: [],
   rejected: 0,
+  stop: null,
 };
 
 /**
@@ -52,6 +59,7 @@ export function reduceStream(state: StreamSnapshot, message: unknown): StreamSna
         connection: state.connection,
         hasBeenLive: state.hasBeenLive,
         rejected: state.rejected,
+        stop: state.stop,
       };
     case 'connection':
       return {
@@ -59,6 +67,8 @@ export function reduceStream(state: StreamSnapshot, message: unknown): StreamSna
         connection: parsed.state,
         hasBeenLive: state.hasBeenLive || parsed.state === 'live',
       };
+    case 'stopped':
+      return { ...state, stop: parsed.stop };
     case 'event': {
       // MAIN already drops duplicates; applying one twice would still be wrong here.
       if (parsed.event.seq <= state.lastSeq) return state;

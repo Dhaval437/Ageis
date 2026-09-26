@@ -92,9 +92,26 @@ export const Paused: Story = {
   beforeEach: stream('live', [event('task.status', { status: 'PAUSED_BY_USER' })]),
 };
 
-/** The kill switch was pressed. */
+/** The task reports it was stopped. */
 export const Stopped: Story = {
   beforeEach: stream('live', [event('task.status', { status: 'STOPPED' })]),
+};
+
+/**
+ * The kill switch was pressed and the hung engine ended (P3-14): MAIN's stop, shown
+ * while the replacement engine is still connecting.
+ */
+export const StoppedByKillSwitch: Story = {
+  beforeEach: () => {
+    stream('connecting', [running])();
+    useStreamStore.setState({
+      stop: {
+        at: new Date(Date.now() + 1_000).toISOString(),
+        outcome: 'terminated',
+        elapsedMs: 102,
+      },
+    });
+  },
 };
 
 /** The longest action text, truncated to one line with the whole of it in the tooltip. */

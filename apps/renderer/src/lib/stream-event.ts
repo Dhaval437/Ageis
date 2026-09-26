@@ -1,4 +1,11 @@
-import { EVENT_TYPES, type CoreConnection, type EventType, type StreamEvent } from '@aegis/shared';
+import {
+  EVENT_TYPES,
+  type CoreConnection,
+  type EventType,
+  type KillOutcome,
+  type KillSwitchStop,
+  type StreamEvent,
+} from '@aegis/shared';
 
 /**
  * Runtime checks for what arrives over `core.subscribe`.
@@ -14,6 +21,12 @@ const CONNECTION_STATES: ReadonlySet<string> = new Set<CoreConnection>([
   'live',
   'down',
   'unavailable',
+]);
+
+const KILL_OUTCOMES: ReadonlySet<string> = new Set<KillOutcome>([
+  'acknowledged',
+  'terminated',
+  'no-core',
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -32,11 +45,22 @@ export function parseStreamEvent(value: unknown): StreamEvent | null {
   return { seq, ts, task_id: taskId, type: type as EventType, payload };
 }
 
+/** A well-formed kill-switch stop from MAIN (P3-14), or `null`. */
+export function parseKillSwitchStop(value: unknown): KillSwitchStop | null {
+  if (!isRecord(value)) return null;
+  const { at, outcome, elapsedMs } = value;
+  if (typeof at !== 'string' || !Number.isFinite(Date.parse(at))) return null;
+  if (typeof outcome !== 'string' || !KILL_OUTCOMES.has(outcome)) return null;
+  if (typeof elapsedMs !== 'number' || !Number.isFinite(elapsedMs) || elapsedMs < 0) return null;
+  return { at, outcome: outcome as KillOutcome, elapsedMs };
+}
+
 /** What the store can act on. An unreadable message is `invalid`, never a guess. */
 export type ParsedStreamMessage =
   | { readonly kind: 'event'; readonly event: StreamEvent }
   | { readonly kind: 'reset' }
   | { readonly kind: 'connection'; readonly state: CoreConnection }
+  | { readonly kind: 'stopped'; readonly stop: KillSwitchStop }
   | { readonly kind: 'invalid' };
 
 export function parseStreamMessage(value: unknown): ParsedStreamMessage {
@@ -53,6 +77,10 @@ export function parseStreamMessage(value: unknown): ParsedStreamMessage {
       return typeof state === 'string' && CONNECTION_STATES.has(state)
         ? { kind: 'connection', state: state as CoreConnection }
         : { kind: 'invalid' };
+    }
+    case 'stopped': {
+      const stop = parseKillSwitchStop(value['stop']);
+      return stop === null ? { kind: 'invalid' } : { kind: 'stopped', stop };
     }
     default:
       return { kind: 'invalid' };

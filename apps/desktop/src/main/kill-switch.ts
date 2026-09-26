@@ -22,17 +22,13 @@
  * `electron`-free: the gateway and the supervisor are injected.
  */
 
+import type { KillOutcome } from '@aegis/shared';
 import type { CoreGateway } from './bridge-handlers.js';
+
+export type { KillOutcome };
 
 /** How long a core gets to acknowledge before it is terminated. */
 export const KILL_ACK_TIMEOUT_MS = 100;
-
-/**
- * - `acknowledged`: the core froze and released its keys itself.
- * - `terminated`: it did not answer in time, and MAIN killed it.
- * - `no-core`: there was nothing to stop.
- */
-export type KillOutcome = 'acknowledged' | 'terminated' | 'no-core';
 
 export interface KillReport {
   readonly outcome: KillOutcome;

@@ -76,8 +76,29 @@ export interface CoreResponse {
 export type CoreConnection = 'connecting' | 'live' | 'down' | 'unavailable';
 
 /**
+ * How a kill-switch press ended (`P3-06`):
+ *
+ * - `acknowledged` — the core froze and released its keys itself.
+ * - `terminated` — it did not answer in time, and MAIN killed it.
+ * - `no-core` — there was nothing to stop.
+ */
+export type KillOutcome = 'acknowledged' | 'terminated' | 'no-core';
+
+/**
+ * One kill-switch press, as the UI shows it (`UI.md § 7`, P3-14). MAIN's own fact:
+ * a hung or terminated core cannot report that it was stopped.
+ */
+export interface KillSwitchStop {
+  /** When the stop completed: UTC ISO-8601 with milliseconds, as event `ts`s are. */
+  readonly at: string;
+  readonly outcome: KillOutcome;
+  /** Milliseconds from the press to the outcome. */
+  readonly elapsedMs: number;
+}
+
+/**
  * What `core.subscribe` delivers. An envelope, because the renderer has to learn
- * three things over the one channel and a bare event can only say one of them.
+ * four things over the one channel and a bare event can only say one of them.
  */
 export type CoreStreamMessage =
   /** One `§ 9.2` event, in `seq` order. `unknown` on purpose: the store validates it. */
@@ -88,7 +109,13 @@ export type CoreStreamMessage =
    * replay of whatever the core retains follows.
    */
   | { readonly kind: 'reset' }
-  | { readonly kind: 'connection'; readonly state: CoreConnection };
+  | { readonly kind: 'connection'; readonly state: CoreConnection }
+  /**
+   * The person pressed the kill switch (P3-14). Outlives a `reset` — a terminated
+   * core is replaced by a new one, and "Stopped by you" must still show — so MAIN
+   * sends it again after each one. A task-status event newer than `at` supersedes it.
+   */
+  | { readonly kind: 'stopped'; readonly stop: KillSwitchStop };
 
 /** Global shortcuts, owned by MAIN so a hung core cannot disable them. */
 export interface HotkeyMap {
