@@ -53,6 +53,12 @@ export interface KillSwitchOptions {
   readonly ackTimeoutMs?: number;
   readonly onReport?: (report: KillReport) => void;
   readonly now?: () => number;
+  /**
+   * MAIN's own modifier release (P3-15), for a core that acknowledged the stop but
+   * could not release everything it held (`releaseFailures > 0`). A terminated core
+   * is released by the supervisor itself.
+   */
+  readonly releaseModifiers?: (reason: string) => void;
 }
 
 export interface KillSwitch {
@@ -114,6 +120,9 @@ export function createKillSwitch(options: KillSwitchOptions): KillSwitch {
 
     let report: KillReport;
     if (ack !== null) {
+      if (ack.releaseFailures > 0) {
+        options.releaseModifiers?.('the core could not release everything it held');
+      }
       report = {
         outcome: 'acknowledged',
         elapsedMs: now() - started,

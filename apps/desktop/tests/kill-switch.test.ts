@@ -129,3 +129,37 @@ describe('createKillSwitch', () => {
     expect(terminate).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('the kill switch and MAIN’s own release (P3-15)', () => {
+  function withRelease(body: unknown, respond = true) {
+    const reasons: string[] = [];
+    const gateway = respond
+      ? gatewayAnswering(Promise.resolve({ status: 200, body }))
+      : hungGateway();
+    const killSwitch = createKillSwitch({
+      gateway: () => gateway,
+      terminate: () => Promise.resolve(true),
+      releaseModifiers: (reason) => reasons.push(reason),
+      ackTimeoutMs: 20,
+    });
+    return { killSwitch, reasons };
+  }
+
+  it('releases when a core acknowledged but could not release everything', async () => {
+    const { killSwitch, reasons } = withRelease({ ...ACK, release_failures: 2 });
+    await killSwitch.trigger();
+    expect(reasons).toEqual(['the core could not release everything it held']);
+  });
+
+  it('leaves it to the core when the core released everything', async () => {
+    const { killSwitch, reasons } = withRelease(ACK);
+    await killSwitch.trigger();
+    expect(reasons).toEqual([]);
+  });
+
+  it('leaves a terminated core to the supervisor, which releases after the kill', async () => {
+    const { killSwitch, reasons } = withRelease(null, false);
+    expect((await killSwitch.trigger()).outcome).toBe('terminated');
+    expect(reasons).toEqual([]);
+  });
+});

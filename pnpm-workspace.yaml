@@ -6,3 +6,4 @@ packages:
 allowBuilds:
   electron: true
   esbuild: true
+  koffi: set this to true or false

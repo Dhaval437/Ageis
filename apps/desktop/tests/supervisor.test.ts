@@ -546,8 +546,56 @@ describe('createSupervisor', () => {
       const state = await settleOn(() => supervisor.state(), ['unavailable']);
 
       expect(cores).toHaveLength(3);
-      expect(state.lastError).toBe('The engine stopped responding during a task, so Aegis stopped it.');
+      expect(state.lastError).toBe(
+        'The engine stopped responding during a task, so Aegis stopped it.',
+      );
       expect(supervisor.gateway()).toBeNull();
+      await supervisor.stop();
+    });
+
+    it('releases the modifiers straight after the kill, before any state or UI update', async () => {
+      const timeline: string[] = [];
+      const harness = spawner(() => new LauncherCore(7000));
+      const supervisor = createSupervisor({
+        spec: SPEC,
+        startCoreFn: harness.startCoreFn,
+        createGatewayFn: () => healthyGateway(),
+        restartDelayMs: 60_000,
+        terminatePid: (pid) => timeline.push(`terminate ${String(pid)}`),
+        releaseModifiers: (reason) => timeline.push(`release: ${reason}`),
+        onSession: (session) => timeline.push(session === null ? 'session gone' : 'session'),
+        onState: (state) => timeline.push(`state ${state.status}`),
+      });
+      await supervisor.start();
+      timeline.length = 0;
+
+      await supervisor.terminate('kill-switch');
+
+      // Both kills first, then both releases — straight after the kill, and again
+      // on the exit (which this fake reports at once) — and only then any state.
+      expect(timeline.slice(0, 2)).toEqual(['terminate 4001', 'terminate 7000']);
+      expect([...timeline.slice(2, 4)].sort()).toEqual([
+        'release: the core the kill-switch terminated has exited',
+        'release: the kill-switch terminated the core',
+      ]);
+      expect(timeline.indexOf('session gone')).toBeGreaterThan(3);
+      await supervisor.stop();
+    });
+
+    it('a watchdog kill releases the modifiers too', async () => {
+      const reasons: string[] = [];
+      const harness = spawner(() => new FakeCore());
+      const supervisor = createSupervisor({
+        spec: SPEC,
+        startCoreFn: harness.startCoreFn,
+        createGatewayFn: () => healthyGateway(),
+        restartDelayMs: 60_000,
+        terminatePid: () => undefined,
+        releaseModifiers: (reason) => reasons.push(reason),
+      });
+      await supervisor.start();
+      await supervisor.terminate('watchdog');
+      expect(reasons).toContain('the watchdog terminated the core');
       await supervisor.stop();
     });
 
@@ -559,5 +607,50 @@ describe('createSupervisor', () => {
       expect(terminated).toEqual([]);
       await supervisor.stop();
     });
+  });
+});
+
+describe('a core that dies on its own (P3-15)', () => {
+  function build(running: boolean) {
+    const timeline: string[] = [];
+    const harness = spawner(() => new FakeCore());
+    const supervisor = createSupervisor({
+      spec: SPEC,
+      startCoreFn: harness.startCoreFn,
+      createGatewayFn: () => healthyGateway(),
+      restartDelayMs: 60_000,
+      releaseModifiers: (reason) => timeline.push(`release: ${reason}`),
+      taskRunning: () => running,
+      onSession: (session) => timeline.push(session === null ? 'session gone' : 'session'),
+      onState: (state) => timeline.push(`state ${state.status}`),
+    });
+    return { supervisor, timeline, ...harness };
+  }
+
+  it('during a task: the release is the very first thing that happens', async () => {
+    const { supervisor, timeline, cores } = build(true);
+    await supervisor.start();
+    timeline.length = 0;
+    cores[0]?.exit(1);
+    expect(timeline[0]).toBe('release: the core died during a task');
+    expect(timeline.slice(1)).toContain('session gone');
+    await supervisor.stop();
+  });
+
+  it('while idle: nothing is released — the keys down are the person’s', async () => {
+    const { supervisor, timeline, cores } = build(false);
+    await supervisor.start();
+    timeline.length = 0;
+    cores[0]?.exit(1);
+    expect(timeline.filter((line) => line.startsWith('release'))).toEqual([]);
+    await supervisor.stop();
+  });
+
+  it('a core stopped on purpose is not a death to release after', async () => {
+    const { supervisor, timeline } = build(true);
+    await supervisor.start();
+    timeline.length = 0;
+    await supervisor.stop();
+    expect(timeline.filter((line) => line.startsWith('release'))).toEqual([]);
   });
 });

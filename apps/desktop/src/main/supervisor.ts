@@ -96,6 +96,15 @@ export interface SupervisorOptions {
   readonly now?: () => number;
   /** Injected in tests; defaults to `TerminateProcess` via `process.kill`. */
   readonly terminatePid?: (pid: number) => void;
+  /**
+   * Let go of every held modifier through MAIN's own keyboard (`RECOVERY.md § 4`,
+   * P3-15). Called straight after a core is terminated — before any state or UI
+   * update — and again when it is seen to exit, and first thing when a core dies on
+   * its own while `taskRunning()` says it was working.
+   */
+  readonly releaseModifiers?: (reason: string) => void;
+  /** Whether a task was running, so an idle core's crash does not lift the human's keys. */
+  readonly taskRunning?: () => boolean;
 }
 
 export interface Supervisor {
@@ -261,6 +270,11 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
   function onCoreExit(exited: ChildProcessWithoutNullStreams): void {
     // A late exit from a core we already replaced or killed is not news.
     if (exited !== child) return;
+    // RECOVERY.md § 4's absolute rule: the very first thing, before any state or UI
+    // change, is to let go of whatever the dead core may have been holding.
+    if (!stopped && options.taskRunning?.() === true) {
+      options.releaseModifiers?.('the core died during a task');
+    }
     child = null;
     gateway = null;
     corePid = null;
@@ -374,13 +388,21 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
     child = null;
     gateway = null;
     corePid = null;
-    options.onSession?.(null);
+    // Listening before the kill, so an exit reported at once is not missed.
+    running.once('exit', () => {
+      options.releaseModifiers?.(`the core the ${cause} terminated has exited`);
+    });
     // Only while `child` was still ours: a PID MAIN has seen exit may already
     // belong to somebody else's program.
     if (pid !== null) terminatePid(pid);
     if (running.pid !== undefined && running.pid !== pid) terminatePid(running.pid);
     // Belt and braces for the launcher; `TerminateProcess` again is harmless.
     running.kill('SIGKILL');
+    // Straight after the kill, not before it: a hung core can still have an input
+    // thread, and a key it pressed after an earlier release would stay down. And
+    // once more when the process is really gone, for the last event it sent.
+    options.releaseModifiers?.(`the ${cause} terminated the core`);
+    options.onSession?.(null);
     if (cause === 'watchdog') {
       // A hang is a failure like a crash: it spends the budget, so a core that
       // hangs on every task stops being respawned (RECOVERY.md § 4).

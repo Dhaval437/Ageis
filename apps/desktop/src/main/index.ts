@@ -32,6 +32,8 @@ import { createCoreStream, type CoreAvailability, type CoreStream } from './core
 import { createTaskActivity } from './task-activity.js';
 import { createWatchdog, type Watchdog, type WatchdogReport } from './watchdog.js';
 import { createOverlay, type Overlay } from './overlay.js';
+import { describeRelease, releaseModifiers } from './modifier-release.js';
+import { nativeKeyInput } from './win-input.js';
 import {
   createSupervisor,
   resolveCoreLaunch,
@@ -187,6 +189,7 @@ function bootstrap(): void {
         gateway: () => supervisor?.gateway() ?? null,
         terminate: () => supervisor?.terminate('kill-switch') ?? Promise.resolve(false),
         onReport: logKillReport,
+        releaseModifiers: releaseHeldModifiers,
       });
       // The other half of "a hung agent is never a still-clicking agent": the
       // kill switch covers a hang somebody notices, this one a hang nobody does.
@@ -308,6 +311,8 @@ function createCoreSupervisor(): Supervisor {
     onSession: (session) => {
       coreStream?.setSession(session);
     },
+    releaseModifiers: releaseHeldModifiers,
+    taskRunning: taskActivity.running,
   });
 }
 
@@ -322,6 +327,19 @@ function logKillReport(report: KillReport): void {
     console.error(
       `[main] kill switch: the core could not release ${String(report.releaseFailures)} controller(s); a key may be held`,
     );
+  }
+}
+
+/**
+ * `RECOVERY.md § 4`: a dead or hung core cannot let go of the keys it held, so MAIN
+ * does, through its own keyboard (P3-15). Synchronous, so nothing runs before it.
+ */
+function releaseHeldModifiers(reason: string): void {
+  const report = releaseModifiers(nativeKeyInput());
+  if (report.released.length > 0 || report.failed.length > 0 || report.unavailable) {
+    const line = describeRelease(reason, report);
+    if (report.failed.length > 0 || report.unavailable) console.error(line);
+    else console.warn(line);
   }
 }
 

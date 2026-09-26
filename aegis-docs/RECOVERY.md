@@ -136,6 +136,8 @@ Detected by MAIN via health-check failure, broken pipe, or watchdog timeout.
 
 **Absolute rule:** if the core dies while a task is running, MAIN's very first action — before any UI update — is to release all modifier keys via its own input path. A dead agent must not leave the keyboard in a broken state.
 
+*How (P3-15).* `main/modifier-release.ts` over `main/win-input.ts`: every modifier Windows reports down gets a tagged `KEYUP`, and one that fails does not stop the others. MAIN cannot know which keys the dead core pressed, so it releases every modifier that is down — which can include one the person is holding (the kill switch's own `Ctrl+Alt+Shift`); that key reads as up until they press it again, a far smaller harm than a `Ctrl` held for good. An idle core that crashes does **not** trigger it, because then the keys down are the person's.
+
 ---
 
 ## 5. Data recovery
