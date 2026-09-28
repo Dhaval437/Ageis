@@ -16,10 +16,15 @@ import { ApprovalDialog } from '@/components/ApprovalDialog';
 import { EngineUnavailable } from '@/components/EngineUnavailable';
 import { KillSwitchBar } from '@/components/KillSwitchBar';
 import { ModelsScreen } from '@/components/models/ModelsScreen';
+import { ScopeManager } from '@/components/ScopeManager';
+import { ScopePicker } from '@/components/ScopePicker';
 import { Button } from '@/components/ui/button';
 import { engineStatusView } from '@/lib/engine-status';
 import { cn } from '@/lib/utils';
+import { whatThisAllows } from '@/lib/scopes-api';
+import { loadScopes } from '@/lib/scopes-client';
 import { checkKillSwitch } from '@/stores/kill-switch';
+import { selectedScope, useScopesStore } from '@/stores/scopes';
 import { useStreamStore } from '@/stores/stream';
 import { useWindowStore } from '@/stores/window';
 
@@ -56,7 +61,12 @@ export function AppShell(): ReactElement {
   const active = SECTIONS.find((section) => section.id === activeId) ?? SECTIONS[0];
   // `UI.md § 9`, "Core not running": the recovery card takes the whole panel,
   // because nothing else in it can do anything while the engine is gone.
-  const engineGone = useStreamStore((state) => state.connection) === 'unavailable';
+  const connection = useStreamStore((state) => state.connection);
+  const engineGone = connection === 'unavailable';
+  // Each time the engine comes (back) up: a new core may have narrowed a stored scope.
+  useEffect(() => {
+    if (connection === 'live') void loadScopes();
+  }, [connection]);
   // Once per window: whether the kill switch's shortcut is really registered (P3-14).
   useEffect(() => {
     void checkKillSwitch();
@@ -64,7 +74,11 @@ export function AppShell(): ReactElement {
 
   return (
     <div className="flex h-full flex-col bg-bg text-text">
-      <Titlebar />
+      <Titlebar
+        onManageScopes={() => {
+          setActiveId('rules');
+        }}
+      />
       <div className="flex min-h-0 flex-1">
         <Rail activeId={active.id} onSelect={setActiveId} />
         <main className="flex min-w-0 flex-1 flex-col border-r border-border">
@@ -74,7 +88,7 @@ export function AppShell(): ReactElement {
             className={cn(
               'flex min-h-0 flex-1',
               // A screen with content fills the panel; a placeholder is centred in it.
-              engineGone || active.id !== 'models'
+              engineGone || !SCREENS.has(active.id)
                 ? 'items-center justify-center'
                 : 'items-stretch',
             )}
@@ -84,6 +98,9 @@ export function AppShell(): ReactElement {
               <EngineUnavailable />
             ) : active.id === 'models' ? (
               <ModelsScreen />
+            ) : active.id === 'rules' ? (
+              // `UI.md § 8.3` puts scope management in the Rules screen; the rule lists are P3-18.
+              <ScopeManager />
             ) : (
               <p className="p-6 text-base text-text-dim">{active.empty}</p>
             )}
@@ -98,16 +115,17 @@ export function AppShell(): ReactElement {
   );
 }
 
+/** The sections that are real screens, filling the panel; the rest are centred placeholders. */
+const SCREENS: ReadonlySet<string> = new Set(['models', 'rules']);
+
 /** `UI.md § 4.1`. Drag region, so a frameless window can still be moved. */
-function Titlebar(): ReactElement {
+function Titlebar({ onManageScopes }: { onManageScopes: () => void }): ReactElement {
   return (
     <header className="app-drag flex h-11 shrink-0 items-center gap-3 border-b border-border bg-surface-1 px-3">
       <EngineStatus />
       <div className="ml-auto flex items-center gap-2 text-sm text-text-dim">
-        {/* ScopePicker and AutonomyPicker are real controls from P3 onward. */}
-        <span className="app-no-drag rounded-pill border border-border px-2.5 py-1">
-          Scope: none
-        </span>
+        <ScopePicker onManage={onManageScopes} />
+        {/* The AutonomyPicker is a real control once tasks start (P4). */}
         <span className="app-no-drag rounded-pill border border-border px-2.5 py-1">Standard</span>
         <WindowControls />
       </div>
@@ -250,14 +268,29 @@ function Composer(): ReactElement {
 
 /** `UI.md § 4.3`. Idle shows the scope summary instead of an observation. */
 function LiveView(): ReactElement {
+  const scope = useScopesStore(selectedScope);
   return (
     <aside aria-label="Live view" className="w-90 shrink-0 overflow-y-auto bg-surface-1 p-4">
       <div className="flex h-40 items-center justify-center rounded-card border border-border bg-surface-2 text-sm text-text-dim">
         No observation yet
       </div>
-      <p className="mt-3 text-sm text-text-dim">
-        Aegis can reach nothing until you choose a scope.
-      </p>
+      {scope === null ? (
+        <p className="mt-3 text-sm text-text-dim">
+          Aegis can reach nothing until you choose a scope.
+        </p>
+      ) : (
+        <div className="mt-3 flex flex-col gap-2 text-sm">
+          <p className="font-medium text-text">{scope.name}</p>
+          <p className="text-text-dim">{whatThisAllows(scope)}</p>
+          <ul aria-label={`Folders in ${scope.name}`} className="flex flex-col gap-1">
+            {scope.folders.map((folder) => (
+              <li key={folder} className="truncate font-mono text-xs text-text-dim" title={folder}>
+                {folder}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </aside>
   );
 }

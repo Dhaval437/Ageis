@@ -186,10 +186,28 @@ export interface AegisBridge {
     set(hotkeys: HotkeyMap): Promise<BridgeResult<HotkeyMap>>;
   };
 
+  /**
+   * The only way a folder enters a scope (P3-17). Each opens the OS folder picker **in
+   * MAIN** and sends the folder the person picked straight to the core, signed as
+   * MAIN's; the renderer names neither the folder nor the route, so text on a screen
+   * cannot widen what the agent may reach. Resolves `null` if the person cancelled, and
+   * otherwise the core's answer (a `ScopeInfo`, or a 400 whose `detail` says why not).
+   *
+   * Listing, renaming, dropping folders and deleting only narrow, and go through
+   * `core.request` like any other call.
+   */
+  readonly scopes: {
+    create(name: string): Promise<BridgeResult<CoreResponse | null>>;
+    addFolder(scopeId: number): Promise<BridgeResult<CoreResponse | null>>;
+  };
+
   readonly system: {
-    /** Opens the OS folder picker. Resolves `null` if the user cancelled. */
+    /**
+     * Opens the OS folder picker. Resolves `null` if the user cancelled. Picking does
+     * not make a folder openable; being in a scope does (P3-17).
+     */
     pickFolder(): Promise<BridgeResult<string | null>>;
-    /** Opens a path with its default handler. Only paths the user has granted. */
+    /** Opens a path with its default handler. Only inside a scope's folders or Aegis' own. */
     openPath(path: string): Promise<BridgeResult<null>>;
     /** Reveals a path in Explorer with the item selected. Only paths the user has granted. */
     revealInExplorer(path: string): Promise<BridgeResult<null>>;

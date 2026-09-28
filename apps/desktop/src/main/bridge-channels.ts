@@ -22,6 +22,8 @@ export const INVOKE_CHANNELS = {
   appVersion: 'aegis:app:version',
   appLogsPath: 'aegis:app:logs-path',
   appCopyDiagnosticReport: 'aegis:app:copy-diagnostic-report',
+  scopesCreate: 'aegis:scopes:create',
+  scopesAddFolder: 'aegis:scopes:add-folder',
 } as const;
 
 /** Renderer→MAIN, fire-and-forget. Nothing here may return data. */

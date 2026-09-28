@@ -35,7 +35,12 @@ import {
   type DiagnosticEngine,
 } from './diagnostics.js';
 import { aegisLogDir } from './paths.js';
-import { createPathGrants, type PathGrants, type Realpath } from './path-grants.js';
+import {
+  createPathGrants,
+  scopeFoldersFrom,
+  type PathGrants,
+  type Realpath,
+} from './path-grants.js';
 
 /**
  * Follows junctions, symlinks and 8.3 short names to the real path.
@@ -81,7 +86,11 @@ export interface BridgeSender {
  * one place `system.openPath` has to work out of the box.
  */
 export function registerBridgeIpc(services: BridgeServices): BridgeIpc {
-  const grants = createPathGrants(REALPATH);
+  // The folders the person chose are their scopes' folders (P3-17), asked of the
+  // core at each check through MAIN's own gateway — never a list the renderer gave.
+  const grants = createPathGrants(REALPATH, () =>
+    scopeFoldersFrom(services.rest.core()?.request ?? null),
+  );
   const logDir = aegisLogDir(process.env, homedir());
   // Created here so `Open logs` works even when the core never started and so
   // never made the folder — which is exactly the case the Engine-unavailable
@@ -255,6 +264,8 @@ function register(handlers: BridgeHandlers, services: BridgeServices): void {
   invoke(INVOKE_CHANNELS.appVersion, handlers.appVersion, '');
   invoke(INVOKE_CHANNELS.appLogsPath, handlers.appLogsPath, '');
   invoke(INVOKE_CHANNELS.appCopyDiagnosticReport, handlers.appCopyDiagnosticReport, refused);
+  invoke(INVOKE_CHANNELS.scopesCreate, handlers.scopesCreate, refused);
+  invoke(INVOKE_CHANNELS.scopesAddFolder, handlers.scopesAddFolder, refused);
 
   send(SEND_CHANNELS.windowMinimize, handlers.windowMinimize);
   send(SEND_CHANNELS.windowMaximize, handlers.windowMaximize);

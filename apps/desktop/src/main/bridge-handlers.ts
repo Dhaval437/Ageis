@@ -34,6 +34,12 @@ import type { PathGrants } from './path-grants.js';
  */
 export interface CoreGateway {
   readonly request: (request: CoreRequest) => Promise<CoreResponse>;
+  /**
+   * `request`, signed as MAIN's own (P3-17). For the scope handlers alone: the core
+   * lets a folder into a scope only with this signature, and `coreRequest` — the
+   * renderer's passthrough — must never use it.
+   */
+  readonly grantedRequest?: (request: CoreRequest) => Promise<CoreResponse>;
 }
 
 /**
@@ -136,6 +142,10 @@ export interface BridgeHandlers {
   readonly appLogsPath: () => Promise<string>;
   /** Puts the redacted diagnostic report on the clipboard (P0-17). */
   readonly appCopyDiagnosticReport: () => Promise<BridgeResult<null>>;
+  /** A new scope around a folder the person picks in the dialog MAIN opens (P3-17). */
+  readonly scopesCreate: (input: unknown) => Promise<BridgeResult<CoreResponse | null>>;
+  /** One more folder, picked the same way. */
+  readonly scopesAddFolder: (input: unknown) => Promise<BridgeResult<CoreResponse | null>>;
 }
 
 const CORE_METHODS: readonly string[] = ['GET', 'POST', 'PUT', 'DELETE'];
@@ -152,6 +162,9 @@ function fail<T>(code: BridgeError['code'], message: string): BridgeResult<T> {
 }
 
 const UNAVAILABLE = 'That part of Aegis is not running yet.';
+
+/** `guardian/scope.py`'s `MAX_NAME_CHARS`; the core checks it again. */
+const MAX_SCOPE_NAME = 64;
 
 /**
  * Turns a thrown error into a result. The message is kept because it is shown
@@ -201,7 +214,36 @@ export function parseHotkeyMap(input: unknown): HotkeyMap | null {
   return { killSwitch: trimmed };
 }
 
+/** A scope id as the core issues them: a positive safe integer, nothing else. */
+export function parseScopeId(input: unknown): number | null {
+  return typeof input === 'number' && Number.isSafeInteger(input) && input >= 1 ? input : null;
+}
+
 export function createBridgeHandlers(deps: BridgeDependencies): BridgeHandlers {
+  /**
+   * The one way a folder enters a scope (P3-17): MAIN opens the dialog, and the folder
+   * the person picked goes to the core **signed as MAIN's** — the renderer names neither
+   * the folder nor the route. A cancelled dialog resolves `ok(null)`.
+   */
+  async function pickIntoScope(
+    request: (folder: string) => CoreRequest,
+  ): Promise<BridgeResult<CoreResponse | null>> {
+    const system = deps.system();
+    // Checked before the dialog opens: the person should not pick a folder into nothing.
+    if (system === null || deps.core()?.grantedRequest === undefined) {
+      return fail('unavailable', UNAVAILABLE);
+    }
+    try {
+      const picked = await system.pickFolder();
+      if (picked === null) return ok(null);
+      const signedRequest = deps.core()?.grantedRequest;
+      if (signedRequest === undefined) return fail('unavailable', UNAVAILABLE);
+      return ok(await signedRequest(request(picked)));
+    } catch (error: unknown) {
+      return { ok: false, error: failedFrom(error) };
+    }
+  }
+
   /** Shared shape for the "resolve a path the renderer named" pair. */
   async function withGrantedPath(
     input: unknown,
@@ -311,12 +353,9 @@ export function createBridgeHandlers(deps: BridgeDependencies): BridgeHandlers {
       const system = deps.system();
       if (system === null) return fail('unavailable', UNAVAILABLE);
       try {
-        const picked = await system.pickFolder();
-        if (picked === null) return ok(null);
-        // The user chose it, so it becomes reachable by `openPath` — and only
-        // now. This is the single way a root is granted.
-        await deps.grants.grantRoot(picked);
-        return ok(picked);
+        // Picking a folder no longer makes it openable (P3-17): putting it in a
+        // scope does, so there is one model of "the folders the person chose".
+        return ok(await system.pickFolder());
       } catch (error: unknown) {
         return { ok: false, error: failedFrom(error) };
       }
@@ -356,6 +395,31 @@ export function createBridgeHandlers(deps: BridgeDependencies): BridgeHandlers {
     appVersion: (): Promise<string> => Promise.resolve(deps.appInfo.version()),
 
     appLogsPath: (): Promise<string> => Promise.resolve(deps.appInfo.logsPath()),
+
+    scopesCreate: async (input: unknown): Promise<BridgeResult<CoreResponse | null>> => {
+      const name = typeof input === 'string' ? input.trim() : '';
+      if (name === '' || name.length > MAX_SCOPE_NAME) {
+        return fail(
+          'invalid_request',
+          `A scope needs a name of 1 to ${String(MAX_SCOPE_NAME)} characters.`,
+        );
+      }
+      return pickIntoScope((folder) => ({
+        method: 'POST',
+        path: '/scopes',
+        body: { name, folder },
+      }));
+    },
+
+    scopesAddFolder: async (input: unknown): Promise<BridgeResult<CoreResponse | null>> => {
+      const id = parseScopeId(input);
+      if (id === null) return fail('invalid_request', 'That is not a scope.');
+      return pickIntoScope((folder) => ({
+        method: 'POST',
+        path: `/scopes/${String(id)}/folders`,
+        body: { folder },
+      }));
+    },
 
     appCopyDiagnosticReport: async (): Promise<BridgeResult<null>> => {
       const diagnostics = deps.diagnostics();

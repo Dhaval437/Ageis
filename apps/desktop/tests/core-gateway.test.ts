@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createCoreGateway, type FetchFn } from '../src/main/core-gateway.js';
+import {
+  GRANT_HEADER,
+  createCoreGateway,
+  grantSignature,
+  type FetchFn,
+} from '../src/main/core-gateway.js';
 
 const TOKEN = 'a'.repeat(64);
 const PORT = 54321;
@@ -155,5 +160,50 @@ describe('createCoreGateway', () => {
       globalThis.fetch = original;
     }
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  describe("MAIN's signature (P3-17)", () => {
+    it('is the core’s: the same vector as `tests/server/test_scopes_routes.py`', () => {
+      const body = JSON.stringify({ name: 'Work', folder: 'C:\\Work' });
+      expect(body).toBe('{"name":"Work","folder":"C:\\\\Work"}');
+      expect(grantSignature('a'.repeat(64), 'POST', '/v1/scopes', body)).toBe(
+        '13701eb1a628d0c260bd25faf1d5e1ea14e7dd49b9ab42fcd7460e09b1f89ffa',
+      );
+    });
+
+    it('is added by grantedRequest, over exactly the bytes it sends', async () => {
+      const { gateway, captured } = gatewayReturning(jsonResponse({}));
+      await gateway.grantedRequest?.({
+        method: 'POST',
+        path: '/scopes/3/folders',
+        body: { folder: 'D:\\Photos' },
+      });
+      const init = captured[0]!.init;
+      expect(headersOf(init)[GRANT_HEADER]).toBe(
+        grantSignature(TOKEN, 'POST', '/v1/scopes/3/folders', init.body as string),
+      );
+    });
+
+    it('is never added by request, which is what the renderer’s passthrough uses', async () => {
+      const { gateway, captured } = gatewayReturning(jsonResponse({}));
+      await gateway.request({
+        method: 'POST',
+        path: '/scopes',
+        body: { name: 'x', folder: 'C:\\x' },
+      });
+      const names = Object.keys(headersOf(captured[0]!.init)).map((name) => name.toLowerCase());
+      expect(names).not.toContain(GRANT_HEADER);
+    });
+
+    it('differs for another folder, another path or another token', () => {
+      const base = grantSignature(TOKEN, 'POST', '/v1/scopes', '{"folder":"C:\\\\a"}');
+      expect(grantSignature(TOKEN, 'POST', '/v1/scopes', '{"folder":"C:\\\\b"}')).not.toBe(base);
+      expect(
+        grantSignature(TOKEN, 'POST', '/v1/scopes/1/folders', '{"folder":"C:\\\\a"}'),
+      ).not.toBe(base);
+      expect(grantSignature('b'.repeat(64), 'POST', '/v1/scopes', '{"folder":"C:\\\\a"}')).not.toBe(
+        base,
+      );
+    });
   });
 });

@@ -16,13 +16,29 @@ from typing import Annotated, Final, cast
 
 import anyio
 from anyio.abc import TaskGroup
-from fastapi import APIRouter, HTTPException, Path, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Path,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 
 from aegis_core import __version__
 from aegis_core.actuation.killswitch import KillSwitch
 from aegis_core.guardian.approvals import ApprovalBroker, ApprovalError, ApprovalNotFoundError
+from aegis_core.guardian.scope import (
+    NOT_PICKED,
+    Scope,
+    ScopeBook,
+    ScopeError,
+    ScopeNotFoundError,
+)
 from aegis_core.models.schemas import ProviderId
 from aegis_core.models.service import ModelService
+from aegis_core.server.auth import GRANT_HEADER, SessionAuth
 from aegis_core.server.hub import (
     CLOSE_INVALID_SINCE,
     CLOSE_REPLAY_UNAVAILABLE,
@@ -43,6 +59,11 @@ from aegis_core.server.schemas import (
     KillResponse,
     ModelCatalog,
     RuleKind,
+    ScopeCreate,
+    ScopeFolderAdd,
+    ScopeInfo,
+    ScopeList,
+    ScopeUpdate,
     SettingsRequest,
     SettingsResponse,
     SpendResponse,
@@ -163,6 +184,112 @@ async def revoke_rule(request: Request, rule_id: Annotated[int, Path(ge=1)]) -> 
     if not removed:
         raise HTTPException(status_code=404, detail="There is no such rule.")
     return await list_rules(request)
+
+
+# ---------------------------------------------------------------------------
+# Scopes (`ARCHITECTURE.md § 8.2`, `P3-17`)
+# ---------------------------------------------------------------------------
+#
+# The rule these routes exist to keep: **a folder enters a scope only because the person
+# picked it in the OS dialog.** The renderer reaches the core through MAIN's generic
+# `core.request` with MAIN's own token, so the token cannot tell the two apart. The two
+# routes that add a folder therefore also require `x-aegis-grant`, MAIN's signature over
+# the exact request (`auth.grant_matches`), which MAIN adds only in the path that opened
+# the dialog. Everything else here can only narrow — list, rename, drop folders, delete —
+# and needs nothing more than the token.
+#
+# Every scope read back goes through `load_scope()`, so a stored folder that no longer
+# passes (deleted, newly FORBIDDEN, a hand-edited row) is never shown as allowed, and a
+# write built on it drops it. A refusal is `ScopeError`'s sentence as a 400.
+
+
+def _book(request: Request) -> ScopeBook:
+    book: ScopeBook | None = getattr(request.app.state, "scopes", None)
+    if book is None:
+        raise HTTPException(status_code=503, detail="Scopes are not available.")
+    return book
+
+
+async def _require_grant(request: Request) -> None:
+    """403 unless MAIN signed this exact request. See the section comment above."""
+    auth: SessionAuth = request.app.state.auth
+    target = request.scope.get("raw_path", request.url.path.encode()).decode("latin-1")
+    query = request.scope.get("query_string", b"")
+    if query:
+        target = f"{target}?{query.decode('latin-1')}"
+    body = await request.body()
+    if not auth.grant_matches(request.headers.get(GRANT_HEADER), request.method, target, body):
+        log.warning("scopes.unsigned_widening", extra={"path": request.url.path})
+        raise HTTPException(status_code=403, detail=NOT_PICKED)
+
+
+def _info(scope: Scope) -> ScopeInfo:
+    if scope.id is None:  # pragma: no cover - every scope served here was read from the store
+        raise RuntimeError("a scope without an id")
+    return ScopeInfo(
+        id=scope.id, name=scope.name, folders=list(scope.folders), apps=list(scope.apps)
+    )
+
+
+def _answer(action: Callable[[], Scope]) -> ScopeInfo:
+    """Run one `ScopeBook` write: 404, 400 with its sentence, or 503."""
+    try:
+        return _info(action())
+    except ScopeNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ScopeError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except StorageError as error:
+        raise HTTPException(status_code=503, detail="The scope could not be saved.") from error
+
+
+@router.get("/scopes", response_model=ScopeList)
+async def list_scopes(request: Request) -> ScopeList:
+    """Every scope, each re-validated as it is read."""
+    try:
+        scopes = _book(request).list()
+    except StorageError as error:
+        raise HTTPException(status_code=503, detail="The scopes cannot be read.") from error
+    return ScopeList(scopes=[_info(scope) for scope in scopes])
+
+
+@router.post("/scopes", response_model=ScopeInfo, dependencies=[Depends(_require_grant)])
+async def create_scope(request: Request, body: ScopeCreate) -> ScopeInfo:
+    """A new scope around one folder the person picked. MAIN-signed only."""
+    book = _book(request)
+    return _answer(lambda: book.create(body.name, body.folder))
+
+
+@router.post(
+    "/scopes/{scope_id}/folders", response_model=ScopeInfo, dependencies=[Depends(_require_grant)]
+)
+async def add_scope_folder(
+    request: Request, scope_id: Annotated[int, Path(ge=1)], body: ScopeFolderAdd
+) -> ScopeInfo:
+    """One more folder the person picked. MAIN-signed only."""
+    book = _book(request)
+    return _answer(lambda: book.add_folder(scope_id, body.folder))
+
+
+@router.put("/scopes/{scope_id}", response_model=ScopeInfo)
+async def update_scope(
+    request: Request, scope_id: Annotated[int, Path(ge=1)], body: ScopeUpdate
+) -> ScopeInfo:
+    """Rename, and keep some of the folders. Refuses any folder the scope does not have."""
+    book = _book(request)
+    return _answer(lambda: book.update(scope_id, body.name, body.folders))
+
+
+@router.delete("/scopes/{scope_id}", response_model=ScopeList)
+async def delete_scope(request: Request, scope_id: Annotated[int, Path(ge=1)]) -> ScopeList:
+    """Remove a scope. Answers with the ones that remain; an unknown id is a 404."""
+    try:
+        _book(request).delete(scope_id)
+    except ScopeNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except StorageError as error:
+        raise HTTPException(status_code=503, detail="The scope could not be removed.") from error
+    return await list_scopes(request)
 
 
 # ---------------------------------------------------------------------------

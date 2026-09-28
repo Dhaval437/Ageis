@@ -33,6 +33,10 @@ UPDATE scopes SET name = ?, folders_json = ?, apps_json = ?, updated_at = ? WHER
 _DELETE: Final = "DELETE FROM scopes WHERE id = ?"
 
 
+class DuplicateScopeNameError(StorageError):
+    """Another scope already has that name: a refusal the user can act on."""
+
+
 @dataclass(frozen=True, slots=True)
 class ScopeRecord:
     """A row as stored. Not a scope yet: `guardian.scope.load_scope()` makes one."""
@@ -119,7 +123,7 @@ class ScopeStore:
                     return new_id
                 cursor = self._conn.execute(_UPDATE, (name, *encoded, now, scope_id))
             except sqlite3.IntegrityError as error:
-                raise StorageError("Another scope already has that name.") from error
+                raise DuplicateScopeNameError("Another scope already has that name.") from error
             except sqlite3.Error as error:
                 raise StorageError(f"cannot save the scope: {error}") from error
         if cursor.rowcount == 0:

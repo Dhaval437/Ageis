@@ -13,8 +13,13 @@
  *  - **Every call has a timeout.** A hung core must surface as a failed request,
  *    not as a UI that waits forever (REVIEW.md § 2).
  *  - **The token is never logged, never returned, never put in an error.**
+ *
+ * `grantedRequest` is `request` plus MAIN's signature (`GRANT_HEADER`). Only MAIN's own
+ * code calls it — the scope handlers, after the person picked a folder in the dialog —
+ * never the renderer's generic `core.request` (P3-17).
  */
 
+import { createHmac } from 'node:crypto';
 import type { CoreRequest, CoreResponse } from '@aegis/shared';
 import type { CoreGateway } from './bridge-handlers.js';
 
@@ -32,6 +37,30 @@ const DEFAULT_TIMEOUT_MS = 10_000;
  * runaway response cannot grow MAIN's heap without bound (REVIEW.md § 2).
  */
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * MAIN's signature on a request only MAIN may make (P3-17): the core's scope routes
+ * that add a folder require it, because the renderer's `core.request` arrives with the
+ * same bearer token as everything else and cannot be told apart by it.
+ */
+export const GRANT_HEADER = 'x-aegis-grant';
+
+/**
+ * HMAC-SHA256 (hex) of `METHOD\nTARGET\nBODY`, keyed with the session token — the
+ * core's `server/auth.py` `grant_signature`, and a test holds the two to one vector.
+ * `target` is the path as sent, `/v1` prefix and any query included.
+ */
+export function grantSignature(
+  token: string,
+  method: string,
+  target: string,
+  body: string,
+): string {
+  return createHmac('sha256', token)
+    .update(`${method.toUpperCase()}\n${target}\n`)
+    .update(body)
+    .digest('hex');
+}
 
 export type FetchFn = typeof globalThis.fetch;
 
@@ -75,36 +104,42 @@ export function createCoreGateway(options: CoreGatewayOptions): CoreGateway {
   const doFetch = options.fetchImpl ?? globalThis.fetch;
   const origin = `http://${LOOPBACK}:${port}`;
 
+  async function send(request: CoreRequest, signed: boolean): Promise<CoreResponse> {
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${token}`,
+      accept: 'application/json',
+    };
+    // Serialised once, so the bytes signed are exactly the bytes sent.
+    const body = request.body === undefined ? undefined : JSON.stringify(request.body);
+    if (body !== undefined) headers['content-type'] = 'application/json';
+    const target = `${API_PREFIX}${request.path}`;
+    if (signed) headers[GRANT_HEADER] = grantSignature(token, request.method, target, body ?? '');
+
+    let response: Response;
+    try {
+      response = await doFetch(`${origin}${target}`, {
+        method: request.method,
+        headers,
+        ...(body !== undefined ? { body } : {}),
+        signal: AbortSignal.timeout(timeoutMs),
+        // The core is not a browser origin and must never be treated as one.
+        redirect: 'error',
+      });
+    } catch (error: unknown) {
+      // The URL carries no secret, but the token is in the headers of the
+      // request that failed — so nothing structured from `error` is passed on.
+      throw new Error(
+        error instanceof Error && error.name === 'TimeoutError'
+          ? 'The core did not respond in time.'
+          : 'Aegis could not reach its core.',
+      );
+    }
+
+    return { status: response.status, body: await readBody(response) };
+  }
+
   return {
-    request: async (request: CoreRequest): Promise<CoreResponse> => {
-      const headers: Record<string, string> = {
-        authorization: `Bearer ${token}`,
-        accept: 'application/json',
-      };
-      const hasBody = request.body !== undefined;
-      if (hasBody) headers['content-type'] = 'application/json';
-
-      let response: Response;
-      try {
-        response = await doFetch(`${origin}${API_PREFIX}${request.path}`, {
-          method: request.method,
-          headers,
-          ...(hasBody ? { body: JSON.stringify(request.body) } : {}),
-          signal: AbortSignal.timeout(timeoutMs),
-          // The core is not a browser origin and must never be treated as one.
-          redirect: 'error',
-        });
-      } catch (error: unknown) {
-        // The URL carries no secret, but the token is in the headers of the
-        // request that failed — so nothing structured from `error` is passed on.
-        throw new Error(
-          error instanceof Error && error.name === 'TimeoutError'
-            ? 'The core did not respond in time.'
-            : 'Aegis could not reach its core.',
-        );
-      }
-
-      return { status: response.status, body: await readBody(response) };
-    },
+    request: (request) => send(request, false),
+    grantedRequest: (request) => send(request, true),
   };
 }

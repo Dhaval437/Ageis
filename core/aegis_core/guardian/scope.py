@@ -24,9 +24,9 @@ Apps are stored as executable names (`excel.exe`), the one identity a window's
 process and a launch request both have. Nothing enforces them yet: the `app` and
 `window` tools (`P5`) ask `Scope.admits_app()`.
 
-A folder only enters a scope because the user chose it. Who may *create* a scope,
-and how a folder the user picked in the OS dialog is told apart from a string the
-renderer made up, is `P3-17`'s — this module validates whatever it is given.
+A folder only enters a scope because the user chose it. `ScopeBook` (`P3-17`) is what
+the routes use; *who* may add a folder — MAIN, which opened the dialog, and not the
+renderer — is decided in `server/routes.py` by MAIN's signature.
 """
 
 from __future__ import annotations
@@ -39,8 +39,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from aegis_core.guardian.rules import Rules, Target, canonical_path
-from aegis_core.storage.scopes import ScopeRecord
+from aegis_core.guardian.rules import Rules, RulesError, Target, canonical_path, load_rules
+from aegis_core.storage.db import StorageError
+from aegis_core.storage.scopes import DuplicateScopeNameError, ScopeRecord, ScopeStore
 
 log = logging.getLogger(__name__)
 
@@ -164,3 +165,91 @@ def make_scope(
         apps=tuple(sorted({_app(a) for a in app_list})),
         id=scope_id,
     )
+
+
+#: The one sentence for every attempt to add a folder the person did not pick.
+NOT_PICKED: Final = "A folder can only be added by choosing it yourself."
+
+
+class ScopeNotFoundError(ScopeError):
+    """There is no scope with that id."""
+
+
+class ScopeBook:
+    """The stored scopes, as the scope routes use them (`P3-17`).
+
+    It pairs the table with the rules every folder is checked against, so that nothing
+    outside the Guardian ever holds the rules (`test_forbidden.py` checks). Every scope
+    it hands out has been through `load_scope()`, and every write is built from one, so
+    a folder that no longer passes is dropped rather than carried forward.
+
+    It does not decide **who** may add a folder — the route does, by MAIN's signature —
+    but `update()` enforces the other half: it can only keep folders a scope already has.
+    """
+
+    def __init__(self, store: ScopeStore, rules: Rules) -> None:
+        self._store = store
+        self._rules = rules
+
+    def close(self) -> None:
+        self._store.close()
+
+    def list(self) -> tuple[Scope, ...]:
+        return tuple(load_scope(record, self._rules) for record in self._store.list())
+
+    def get(self, scope_id: int) -> Scope:
+        record = self._store.get(scope_id)
+        if record is None:
+            raise ScopeNotFoundError("There is no such scope.")
+        return load_scope(record, self._rules)
+
+    def create(self, name: str, folder: str) -> Scope:
+        """A new scope around one folder. The caller has proved the person picked it."""
+        return self._save(make_scope(name, [folder], self._rules))
+
+    def add_folder(self, scope_id: int, folder: str) -> Scope:
+        """One more folder. The caller has proved the person picked it."""
+        current = self.get(scope_id)
+        return self._save(
+            make_scope(
+                current.name, [*current.folders, folder], self._rules, current.apps, scope_id
+            )
+        )
+
+    def update(self, scope_id: int, name: str, folders: Iterable[str]) -> Scope:
+        """Rename, and keep some of the folders — only ones the scope lists, exactly."""
+        current = self.get(scope_id)
+        kept = list(folders)
+        if any(folder not in current.folders for folder in kept):
+            raise ScopeError(NOT_PICKED)
+        return self._save(make_scope(name, kept, self._rules, current.apps, scope_id))
+
+    def delete(self, scope_id: int) -> None:
+        if not self._store.delete(scope_id):
+            raise ScopeNotFoundError("There is no such scope.")
+
+    def _save(self, scope: Scope) -> Scope:
+        try:
+            scope_id = self._store.save(scope.name, scope.folders, scope.apps, scope.id)
+        except DuplicateScopeNameError as error:
+            raise ScopeError(str(error)) from error
+        return Scope(scope.name, scope.folders, scope.apps, scope_id)
+
+
+def open_scope_book() -> ScopeBook | None:
+    """The shipped rules and the scope table, or `None` if either cannot be had.
+
+    A rules file that fails its digest is logged as an error — the Guardian refuses to
+    start on it too; the scope routes answer 503 either way.
+    """
+    try:
+        rules = load_rules()
+    except RulesError as error:
+        log.error("scopes.rules_unavailable", extra={"error": str(error)})
+        return None
+    try:
+        store = ScopeStore.open()
+    except StorageError as error:
+        log.warning("scopes.store_unavailable", extra={"error": type(error).__name__})
+        return None
+    return ScopeBook(store, rules)

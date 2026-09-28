@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse
 from aegis_core import __version__
 from aegis_core.actuation.killswitch import KillSwitch
 from aegis_core.guardian.approvals import ApprovalBroker
+from aegis_core.guardian.scope import ScopeBook
 from aegis_core.models.service import ModelService
 from aegis_core.server.auth import SessionAuth, SessionAuthMiddleware
 from aegis_core.server.hub import EventHub
@@ -77,6 +78,7 @@ def create_app(
     models: ModelService | None = None,
     kill_switch: KillSwitch | None = None,
     approvals: ApprovalBroker | None = None,
+    scopes: ScopeBook | None = None,
 ) -> FastAPI:
     """Build the core's HTTP app, authenticated against this session's token.
 
@@ -96,6 +98,10 @@ def create_app(
     `approvals` is the broker the agent asks and `POST /v1/approvals/{id}` answers
     (`P3-11`), reached as `app.state.approvals`. Without one, a broker is made on this
     app's hub with no rule store, so *Allow always* is not offered and `/rules` is empty.
+
+    `scopes` is the `ScopeBook` behind the scope routes (`P3-17`), reached as
+    `app.state.scopes`; without one they answer 503. The caller owns and closes it.
+    `auth` is also `app.state.auth`, for the routes that need MAIN's own signature.
     """
     app = FastAPI(
         title="AEGIS core",
@@ -108,6 +114,8 @@ def create_app(
     app.state.started_monotonic = time.monotonic()
     app.state.hub = hub if hub is not None else EventHub()
     app.state.models = models
+    app.state.auth = auth
+    app.state.scopes = scopes
     app.state.kill_switch = kill_switch if kill_switch is not None else KillSwitch()
     hub_ = app.state.hub
     app.state.approvals = (

@@ -36,6 +36,10 @@ export const storyBridge: AegisBridge = {
     get: unavailable,
     set: unavailable,
   },
+  scopes: {
+    create: unavailable,
+    addFolder: unavailable,
+  },
   system: {
     pickFolder: unavailable,
     openPath: unavailable,

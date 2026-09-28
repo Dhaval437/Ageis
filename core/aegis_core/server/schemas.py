@@ -377,6 +377,57 @@ class AllowRuleInfo(BaseModel):
     created_at: str
 
 
+class ScopeInfo(BaseModel):
+    """One scope as the renderer shows it (`P3-17`): re-validated as it was read, so it
+    lists only what it allows **now** — a stored folder that no longer passes is gone."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: int
+    name: str
+    folders: list[str] = Field(description="Canonical folders, the whole of what it allows.")
+    apps: list[str] = Field(description="Executable names, such as `excel.exe`.")
+
+
+class ScopeList(BaseModel):
+    """`GET /v1/scopes`: every scope, by name."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    scopes: list[ScopeInfo]
+
+
+class ScopeCreate(BaseModel):
+    """`POST /v1/scopes`. **MAIN-signed only**: `folder` is one the person just picked in
+    the OS dialog, and the renderer cannot send this (`x-aegis-grant`)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(max_length=256)
+    folder: str = Field(min_length=1, max_length=4096)
+
+
+class ScopeFolderAdd(BaseModel):
+    """`POST /v1/scopes/{id}/folders`. **MAIN-signed only**, as `ScopeCreate`."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    folder: str = Field(min_length=1, max_length=4096)
+
+
+class ScopeUpdate(BaseModel):
+    """`PUT /v1/scopes/{id}`: rename, and keep **some of** the folders it has.
+
+    Anyone may send this, because it can only narrow: every folder must be one the scope
+    already lists. A new folder only ever arrives through the folder picker.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(max_length=256)
+    folders: list[str] = Field(max_length=32)
+
+
 class AllowRuleList(BaseModel):
     """`GET /v1/rules`: every always-allow rule, newest first. Each is revocable."""
 

@@ -332,6 +332,49 @@ export interface AllowRuleInfo {
   readonly created_at: string;
 }
 
+/**
+ * One scope as the renderer shows it (`P3-17`): re-validated as it was read, so it
+ * lists only what it allows **now** — a stored folder that no longer passes is gone.
+ */
+export interface ScopeInfo {
+  readonly id: number;
+  readonly name: string;
+  /** Canonical folders, the whole of what it allows. */
+  readonly folders: ReadonlyArray<string>;
+  /** Executable names, such as `excel.exe`. */
+  readonly apps: ReadonlyArray<string>;
+}
+
+/** `GET /v1/scopes`: every scope, by name. */
+export interface ScopeList {
+  readonly scopes: ReadonlyArray<ScopeInfo>;
+}
+
+/**
+ * `POST /v1/scopes`. **MAIN-signed only**: `folder` is one the person just picked in
+ * the OS dialog, and the renderer cannot send this (`x-aegis-grant`).
+ */
+export interface ScopeCreate {
+  readonly name: string;
+  readonly folder: string;
+}
+
+/** `POST /v1/scopes/{id}/folders`. **MAIN-signed only**, as `ScopeCreate`. */
+export interface ScopeFolderAdd {
+  readonly folder: string;
+}
+
+/**
+ * `PUT /v1/scopes/{id}`: rename, and keep **some of** the folders it has.
+ *
+ * Anyone may send this, because it can only narrow: every folder must be one the scope
+ * already lists. A new folder only ever arrives through the folder picker.
+ */
+export interface ScopeUpdate {
+  readonly name: string;
+  readonly folders: ReadonlyArray<string>;
+}
+
 /** `GET /v1/rules`: every always-allow rule, newest first. Each is revocable. */
 export interface AllowRuleList {
   readonly rules: ReadonlyArray<AllowRuleInfo>;

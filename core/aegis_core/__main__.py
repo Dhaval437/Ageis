@@ -34,6 +34,7 @@ from fastapi import FastAPI
 
 from aegis_core import __version__
 from aegis_core.guardian.approvals import ApprovalBroker
+from aegis_core.guardian.scope import ScopeBook, open_scope_book
 from aegis_core.logging_setup import configure_logging
 from aegis_core.models.service import ModelService
 from aegis_core.parent_watch import ParentWatch
@@ -184,6 +185,7 @@ def main(
 
     models: ModelService | None = None
     approvals: ApprovalBroker | None = None
+    scopes: ScopeBook | None = None
     token = read_token(stdin if stdin is not None else sys.stdin)
     bootstrap()
     sock = bind_loopback(args.port)
@@ -194,7 +196,8 @@ def main(
         hub = EventHub()
         models = _model_service(hub)
         approvals = _approval_broker(hub)
-        app = create_app(auth, hub, models, approvals=approvals)
+        scopes = open_scope_book()
+        app = create_app(auth, hub, models, approvals=approvals, scopes=scopes)
 
         announce(
             Handshake(port=port, pid=os.getpid(), version=__version__),
@@ -217,6 +220,8 @@ def main(
         if approvals is not None:
             # The same for the rule store's connection; closing twice is safe.
             approvals.close()
+        if scopes is not None:
+            scopes.close()
 
 
 if __name__ == "__main__":

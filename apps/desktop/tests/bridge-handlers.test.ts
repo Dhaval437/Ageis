@@ -21,7 +21,10 @@ const WORK = 'C:\\Users\\Bo\\Work';
 function services() {
   const core: CoreGateway = {
     request: vi.fn(() => Promise.resolve({ status: 200, body: { ok: true } })),
+    grantedRequest: vi.fn(() => Promise.resolve({ status: 200, body: { id: 1 } })),
   };
+  /** The folders of the stored scopes, as the core would list them (P3-17). */
+  const scopeRoots: string[] = [];
   let maximized = false;
   const window: WindowService = {
     minimize: vi.fn(),
@@ -47,7 +50,7 @@ function services() {
   };
   const coreControl: CoreControl = { restart: vi.fn(() => Promise.resolve()) };
   const diagnostics: DiagnosticsService = { copyReport: vi.fn(() => Promise.resolve()) };
-  return { core, window, hotkeys, system, updates, coreControl, diagnostics };
+  return { core, window, hotkeys, system, updates, coreControl, diagnostics, scopeRoots };
 }
 
 /** `realpath` for a world where everything under `WORK` exists and resolves to itself. */
@@ -70,7 +73,7 @@ function build(overrides: Partial<BridgeDependencies> = {}): {
     hotkeys: () => svc.hotkeys,
     system: () => svc.system,
     updates: () => svc.updates,
-    grants: createPathGrants(realpath),
+    grants: createPathGrants(realpath, () => Promise.resolve(svc.scopeRoots)),
     appInfo: { version: () => '0.0.0', logsPath: () => 'C:\\Logs' },
     ...overrides,
   };
@@ -266,13 +269,38 @@ describe('bridge handlers', () => {
   });
 
   describe('system', () => {
-    it('grants the folder the user picked, and only that', async () => {
-      const { handlers } = build();
-      expect(await handlers.systemPickFolder()).toEqual({ ok: true, value: WORK });
+    it('opens a path inside a scope folder (P3-17)', async () => {
+      const { handlers, svc } = build();
+      svc.scopeRoots.push(WORK);
       expect(await handlers.systemOpenPath(`${WORK}\\notes.txt`)).toEqual({
         ok: true,
         value: null,
       });
+    });
+
+    it('picking a folder alone no longer makes it openable: only a scope does', async () => {
+      const { handlers, svc } = build();
+      expect(await handlers.systemPickFolder()).toEqual({ ok: true, value: WORK });
+      const result = await handlers.systemOpenPath(`${WORK}\\notes.txt`);
+      expect(result.ok ? null : result.error.code).toBe('not_granted');
+      expect(svc.system.openPath).not.toHaveBeenCalled();
+    });
+
+    it('opens nothing from the scopes when they cannot be read', async () => {
+      const svc = services();
+      const handlers = createBridgeHandlers({
+        core: () => svc.core,
+        coreControl: () => svc.coreControl,
+        diagnostics: () => svc.diagnostics,
+        window: () => svc.window,
+        hotkeys: () => svc.hotkeys,
+        system: () => svc.system,
+        updates: () => svc.updates,
+        grants: createPathGrants(realpath, () => Promise.reject(new Error('core down'))),
+        appInfo: { version: () => '0.0.0', logsPath: () => 'C:\\Logs' },
+      });
+      const result = await handlers.systemOpenPath(`${WORK}\\notes.txt`);
+      expect(result.ok ? null : result.error.code).toBe('not_granted');
     });
 
     it('denies a path before the user has picked anything', async () => {
@@ -284,7 +312,7 @@ describe('bridge handlers', () => {
 
     it('denies a path outside every granted root', async () => {
       const { handlers, svc } = build();
-      await handlers.systemPickFolder();
+      svc.scopeRoots.push(WORK);
       const result = await handlers.systemRevealInExplorer('C:\\Users\\Bo\\.ssh\\id_rsa');
       expect(result.ok ? null : result.error.code).toBe('not_granted');
       expect(svc.system.revealInExplorer).not.toHaveBeenCalled();
@@ -292,7 +320,7 @@ describe('bridge handlers', () => {
 
     it('refuses to launch a program even from a granted folder', async () => {
       const { handlers, svc } = build();
-      await handlers.systemPickFolder();
+      svc.scopeRoots.push(WORK);
       const result = await handlers.systemOpenPath(`${WORK}\\installer.exe`);
       expect(result.ok ? null : result.error.code).toBe('not_granted');
       expect(svc.system.openPath).not.toHaveBeenCalled();
@@ -300,7 +328,7 @@ describe('bridge handlers', () => {
 
     it('still reveals that program in Explorer, which shows it rather than running it', async () => {
       const { handlers, svc } = build();
-      await handlers.systemPickFolder();
+      svc.scopeRoots.push(WORK);
       expect(await handlers.systemRevealInExplorer(`${WORK}\\installer.exe`)).toEqual({
         ok: true,
         value: null,
@@ -310,7 +338,7 @@ describe('bridge handlers', () => {
 
     it('hands the shell the resolved path, never the renderer’s spelling', async () => {
       const { handlers, svc } = build();
-      await handlers.systemPickFolder();
+      svc.scopeRoots.push(WORK);
       await handlers.systemOpenPath(`${WORK}\\sub\\..\\notes.txt`);
       expect(svc.system.openPath).toHaveBeenCalledWith(`${WORK}\\notes.txt`);
     });
@@ -350,6 +378,96 @@ describe('bridge handlers', () => {
       const { handlers } = build();
       expect(await handlers.appVersion()).toBe('0.0.0');
       expect(await handlers.appLogsPath()).toBe('C:\\Logs');
+    });
+  });
+
+  describe('scopes (P3-17)', () => {
+    it('opens the dialog in MAIN and sends the picked folder signed', async () => {
+      const { handlers, svc } = build();
+      expect(await handlers.scopesCreate('  Work files  ')).toEqual({
+        ok: true,
+        value: { status: 200, body: { id: 1 } },
+      });
+      expect(svc.system.pickFolder).toHaveBeenCalledOnce();
+      expect(svc.core.grantedRequest).toHaveBeenCalledWith({
+        method: 'POST',
+        path: '/scopes',
+        body: { name: 'Work files', folder: WORK },
+      });
+      expect(svc.core.request).not.toHaveBeenCalled();
+    });
+
+    it('adds a picked folder to a scope, signed', async () => {
+      const { handlers, svc } = build();
+      await handlers.scopesAddFolder(3);
+      expect(svc.core.grantedRequest).toHaveBeenCalledWith({
+        method: 'POST',
+        path: '/scopes/3/folders',
+        body: { folder: WORK },
+      });
+    });
+
+    it('sends nothing when the person cancels the dialog', async () => {
+      const { handlers, svc } = build();
+      vi.mocked(svc.system.pickFolder).mockResolvedValueOnce(null);
+      expect(await handlers.scopesCreate('Work')).toEqual({ ok: true, value: null });
+      expect(svc.core.grantedRequest).not.toHaveBeenCalled();
+    });
+
+    it.each([undefined, null, 7, '', '   ', 'x'.repeat(65), { name: 'Work' }])(
+      'refuses the name %j without opening the dialog',
+      async (name) => {
+        const { handlers, svc } = build();
+        const result = await handlers.scopesCreate(name);
+        expect(result.ok ? null : result.error.code).toBe('invalid_request');
+        expect(svc.system.pickFolder).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([0, -1, 1.5, '3', null, Number.MAX_SAFE_INTEGER + 1])(
+      'refuses the scope id %j without opening the dialog',
+      async (id) => {
+        const { handlers, svc } = build();
+        const result = await handlers.scopesAddFolder(id);
+        expect(result.ok ? null : result.error.code).toBe('invalid_request');
+        expect(svc.system.pickFolder).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not open the dialog when there is no core to take the folder', async () => {
+      const { handlers, svc } = build({ core: () => ({ request: vi.fn() }) });
+      const result = await handlers.scopesCreate('Work');
+      expect(result.ok ? null : result.error.code).toBe('unavailable');
+      expect(svc.system.pickFolder).not.toHaveBeenCalled();
+      expect((await buildEmpty().scopesAddFolder(1)).ok).toBe(false);
+    });
+
+    it('reports a failed call as `failed`, not a throw', async () => {
+      const { handlers, svc } = build();
+      vi.mocked(svc.core.grantedRequest!).mockRejectedValueOnce(
+        new Error('Aegis could not reach its core.'),
+      );
+      const result = await handlers.scopesCreate('Work');
+      expect(result).toEqual({
+        ok: false,
+        error: { code: 'failed', message: 'Aegis could not reach its core.' },
+      });
+    });
+
+    it('the renderer’s passthrough never signs, whatever route it names', async () => {
+      const { handlers, svc } = build();
+      await handlers.coreRequest({
+        method: 'POST',
+        path: '/scopes',
+        body: { name: 'x', folder: 'C:\\' },
+      });
+      await handlers.coreRequest({
+        method: 'POST',
+        path: '/scopes/1/folders',
+        body: { folder: 'C:\\' },
+      });
+      expect(svc.core.request).toHaveBeenCalledTimes(2);
+      expect(svc.core.grantedRequest).not.toHaveBeenCalled();
     });
   });
 

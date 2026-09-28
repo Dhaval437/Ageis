@@ -31,6 +31,7 @@ to learn *which* check it tripped. The real reason is logged, never returned.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import logging
 import time
@@ -59,6 +60,21 @@ _BEARER: Final = "bearer "
 
 #: Longer than a hex-encoded 256-bit token and short enough to bound the compare.
 _MAX_AUTHORIZATION_CHARS: Final = 1024
+
+#: The header MAIN signs its own widening requests with (`SessionAuth.grant_matches`).
+GRANT_HEADER: Final = "x-aegis-grant"
+_GRANT_HEX_CHARS: Final = 64
+
+
+def grant_signature(token: str, method: str, target: str, body: bytes) -> str:
+    """HMAC-SHA256 (hex) of `METHOD\\nTARGET\\nBODY`, keyed with the session token.
+
+    `target` is the path as sent, with its query string if it had one. MAIN's
+    `core-gateway.ts` computes the same thing; a test holds the two equal.
+    """
+    message = f"{method.upper()}\n{target}\n".encode() + body
+    return hmac.new(token.encode(), message, hashlib.sha256).hexdigest()
+
 
 #: A resolved peer stays trusted this long. Connections are keep-alive, so this
 #: turns one OS connection-table scan per connection into one per five seconds,
@@ -172,6 +188,23 @@ class SessionAuth:
         if not header.lower().startswith(_BEARER):
             return False
         return hmac.compare_digest(header[len(_BEARER) :].strip(), self.token)
+
+    def grant_matches(self, header: str | None, method: str, target: str, body: bytes) -> bool:
+        """Whether `x-aegis-grant` is MAIN's signature over this exact request (`P3-17`).
+
+        Every request already carries the bearer token, and the renderer's `core.request`
+        reaches the core through MAIN with that same token — so the token alone cannot
+        say that **MAIN itself**, not the renderer, sent a request. The few routes that
+        widen what the agent may reach (a folder entering a scope) need that, and ask for
+        this header: an HMAC-SHA256, keyed with the token, over the method, the path as
+        sent and the exact body. The renderer never holds the token and never sets a
+        header, so it cannot make one, and one made for one folder signs no other.
+        """
+        if header is None or len(header) != _GRANT_HEX_CHARS:
+            return False
+        return hmac.compare_digest(
+            header.lower(), grant_signature(self.token, method, target, body)
+        )
 
     def is_the_supervisor(self, pid: int) -> bool:
         """Whether `pid` is the very process that started this core.

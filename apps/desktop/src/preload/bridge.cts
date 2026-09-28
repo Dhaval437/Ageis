@@ -86,6 +86,15 @@ const bridge: AegisBridge = {
       (await ipcRenderer.invoke('aegis:hotkeys:set', hotkeys)) as BridgeResult<HotkeyMap>,
   },
 
+  scopes: {
+    create: async (name: string): Promise<BridgeResult<CoreResponse | null>> =>
+      (await ipcRenderer.invoke('aegis:scopes:create', name)) as BridgeResult<CoreResponse | null>,
+    addFolder: async (scopeId: number): Promise<BridgeResult<CoreResponse | null>> =>
+      (await ipcRenderer.invoke(
+        'aegis:scopes:add-folder',
+        scopeId,
+      )) as BridgeResult<CoreResponse | null>,
+  },
   system: {
     pickFolder: async (): Promise<BridgeResult<string | null>> =>
       (await ipcRenderer.invoke('aegis:system:pick-folder')) as BridgeResult<string | null>,

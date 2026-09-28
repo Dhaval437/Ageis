@@ -9,7 +9,10 @@
  * so" into "Aegis launched it".
  *
  * So a path is only usable if it resolves inside a root the **user** granted:
- * a folder they picked themselves, or one of Aegis' own data directories. The
+ * a folder in one of their scopes — each one picked in the OS dialog (P3-17) —
+ * or one of Aegis' own data directories. The scopes are the one model of "the
+ * folders the person chose"; this module asks for them at every check rather
+ * than keeping a second list that could disagree. The
  * check runs on the resolved real path, immediately before the call
  * (`REVIEW.md § 5`), because `..`, a symlink, a junction or an 8.3 short name
  * all let a string point somewhere its spelling does not.
@@ -60,18 +63,21 @@ export type GrantCheck =
   | { readonly ok: true; readonly path: string }
   | { readonly ok: false; readonly reason: GrantDenial };
 
+/** The folders of every stored scope, or none if they cannot be had right now. */
+export type ScopeRoots = () => Promise<readonly string[]>;
+
 export interface PathGrants {
-  /** Records a root the user chose. Silently ignores a path that cannot be resolved. */
+  /** Records one of Aegis' own roots. Silently ignores a path that cannot be resolved. */
   readonly grantRoot: (path: string) => Promise<void>;
   /** Resolves a path and confirms it sits inside a granted root. */
   readonly check: (path: string) => Promise<GrantCheck>;
   /** As `check`, and additionally refuses anything that executes when opened. */
   readonly checkOpenable: (path: string) => Promise<GrantCheck>;
-  /** The granted roots, resolved. For diagnostics and tests. */
+  /** Aegis' own granted roots, resolved (not the scopes). For diagnostics and tests. */
   readonly roots: () => readonly string[];
 }
 
-export function createPathGrants(realpath: Realpath): PathGrants {
+export function createPathGrants(realpath: Realpath, scopeRoots?: ScopeRoots): PathGrants {
   const granted: string[] = [];
 
   async function resolveReal(path: string): Promise<string | null> {
@@ -84,10 +90,21 @@ export function createPathGrants(realpath: Realpath): PathGrants {
     }
   }
 
+  async function currentScopeRoots(): Promise<readonly string[]> {
+    if (scopeRoots === undefined) return [];
+    try {
+      return (await scopeRoots()).filter((root) => typeof root === 'string' && root !== '');
+    } catch {
+      // No core, or it could not answer: only Aegis' own folders are open.
+      return [];
+    }
+  }
+
   async function check(path: string): Promise<GrantCheck> {
     const real = await resolveReal(path);
     if (real === null) return { ok: false, reason: 'not_granted' };
-    if (!granted.some((root) => isWithin(root, real))) {
+    const roots = [...granted, ...(await currentScopeRoots())];
+    if (!roots.some((root) => isWithin(root, real))) {
       return { ok: false, reason: 'not_granted' };
     }
     return { ok: true, path: real };
@@ -133,4 +150,33 @@ export function isExecutable(path: string): boolean {
   // so `payload.exe.` and `payload.exe ` both run `payload.exe`.
   const trimmed = path.replace(/[.\s]+$/, '').toLowerCase();
   return EXECUTABLE_EXTENSIONS.some((extension) => trimmed.endsWith(extension));
+}
+
+/**
+ * Every scope folder, from `GET /v1/scopes` through MAIN's own gateway. The core has
+ * already re-validated and canonicalised them; anything that is not a list of strings
+ * counts as no folders at all.
+ */
+export async function scopeFoldersFrom(
+  request:
+    | ((request: { method: 'GET'; path: string }) => Promise<{ status: number; body: unknown }>)
+    | null,
+): Promise<readonly string[]> {
+  if (request === null) return [];
+  const response = await request({ method: 'GET', path: '/scopes' });
+  if (response.status !== 200 || typeof response.body !== 'object' || response.body === null) {
+    return [];
+  }
+  const { scopes } = response.body as { scopes?: unknown };
+  if (!Array.isArray(scopes)) return [];
+  const folders: string[] = [];
+  for (const scope of scopes as unknown[]) {
+    if (typeof scope !== 'object' || scope === null) continue;
+    const listed = (scope as { folders?: unknown }).folders;
+    if (!Array.isArray(listed)) continue;
+    for (const folder of listed as unknown[]) {
+      if (typeof folder === 'string' && folder !== '') folders.push(folder);
+    }
+  }
+  return folders;
 }

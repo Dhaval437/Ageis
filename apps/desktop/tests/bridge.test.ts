@@ -63,6 +63,8 @@ const SURFACE: Record<string, readonly string[]> = {
   window: ['minimize', 'maximize', 'close', 'onMaximizedChange', 'setOverlay'],
   hotkeys: ['get', 'set'],
   system: ['pickFolder', 'openPath', 'revealInExplorer'],
+  // P3-17: the one way a folder enters a scope. Reviewed against REVIEW.md § 5.
+  scopes: ['create', 'addFolder'],
   updates: ['check', 'install', 'onStatus'],
   app: ['version', 'logsPath', 'copyDiagnosticReport', 'onDeepLink'],
 };
@@ -82,7 +84,7 @@ describe('the preload bridge', () => {
     expect(exposed.current?.key).toBe('aegis');
   });
 
-  it('exposes exactly the six namespaces of ARCHITECTURE.md § 9.3, and nothing else', () => {
+  it('exposes exactly the seven namespaces of ARCHITECTURE.md § 9.3, and nothing else', () => {
     expect(Object.keys(bridge).sort()).toEqual(Object.keys(SURFACE).sort());
   });
 
@@ -113,6 +115,8 @@ describe('the preload bridge', () => {
     await bridge.system.pickFolder();
     await bridge.system.openPath('C:\\x');
     await bridge.system.revealInExplorer('C:\\x');
+    await bridge.scopes.create('Work');
+    await bridge.scopes.addFolder(1);
     await bridge.updates.check();
     await bridge.updates.install();
     await bridge.app.version();

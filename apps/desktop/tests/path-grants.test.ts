@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { createPathGrants, isExecutable, isWithin } from '../src/main/path-grants.js';
+import {
+  createPathGrants,
+  isExecutable,
+  isWithin,
+  scopeFoldersFrom,
+} from '../src/main/path-grants.js';
 
 /**
  * A `realpath` that resolves a fixed set of aliases — a junction, an 8.3 short
@@ -124,5 +129,37 @@ describe('createPathGrants', () => {
     await grants.grantRoot(WORK);
     await grants.grantRoot(WORK);
     expect(grants.roots()).toEqual([WORK]);
+  });
+});
+
+describe('scopeFoldersFrom (P3-17)', () => {
+  const answer = (status: number, body: unknown) => () => Promise.resolve({ status, body });
+
+  it('lists every folder of every scope', async () => {
+    const body = {
+      scopes: [
+        { id: 1, name: 'A', folders: ['c:\\work', 'd:\\photos'], apps: [] },
+        { id: 2, name: 'B', folders: ['e:\\music'], apps: [] },
+      ],
+    };
+    expect(await scopeFoldersFrom(answer(200, body))).toEqual([
+      'c:\\work',
+      'd:\\photos',
+      'e:\\music',
+    ]);
+  });
+
+  it.each([
+    ['no core', null],
+    ['a 503', answer(503, { detail: 'Scopes are not available.' })],
+    ['no body', answer(200, null)],
+    ['not a list', answer(200, { scopes: 'c:\\' })],
+  ])('is nothing for %s', async (_label, request) => {
+    expect(await scopeFoldersFrom(request)).toEqual([]);
+  });
+
+  it('skips anything in the list that is not a folder string', async () => {
+    const body = { scopes: [null, { folders: 'c:\\' }, { folders: [7, '', 'c:\\ok'] }] };
+    expect(await scopeFoldersFrom(answer(200, body))).toEqual(['c:\\ok']);
   });
 });
