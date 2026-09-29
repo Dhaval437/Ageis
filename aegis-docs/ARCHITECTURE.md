@@ -344,7 +344,7 @@ def evaluate(tool: Tool, params: dict, ctx: TaskContext) -> Verdict:
 
 At task start the user picks (or reuses) a **scope**: a set of folders plus a set of apps. `fs` tools resolve every path (after `realpath`, symlink-following, and `..` normalisation) and reject anything outside scope. Reading outside scope is `confirm`; writing outside scope is `deny` unless the user widens the scope, which is a deliberate UI action. This turns "the AI deleted my files" from a possibility into a policy violation that cannot compile.
 
-*How (P3-10).* `guardian/scope.py`: a `Scope` is a name, canonical folders and app executable names (`excel.exe`); `make_scope()` refuses a drive or share root, a folder that does not exist, and one a FORBIDDEN entry covers for any access, collapses nesting, and caps both lists at 32. `Scope.contains()` compares canonical paths on a whole-component boundary and is what `TaskContext.in_scope` is. Scopes persist in the `scopes` table (`storage/scopes.py`, which only remembers), and `load_scope()` re-validates every stored folder, so a row can only ever come back **narrower** than it was saved. `Guardian.check_target()` is the re-check a tool makes **immediately before** acting: it canonicalises again, refuses FORBIDDEN, uncheckable and write-outside-scope, and returns the canonical path the tool must act on. The normaliser (`rules.canonical_path()`) now also refuses the **device namespace** (`\\.\C:\…`, pipes, `NUL`), **admin shares** and **this machine under any name** (`\\localhost\C$`, `127.1`, `2130706433`, its own hostname), and a local path whose **links lead to the network** — found by `lstat` and `readlink`, never by opening, because `realpath` on a symlink to a share hung 42 s here. `subst` drives are resolved; mapped network drives are read lexically and never opened. Who may *create* a scope — only folders the user picked in the OS dialog, since the renderer's core passthrough is generic — is `P3-17`.
+*How (P3-10).* `guardian/scope.py`: a `Scope` is a name, canonical folders and app executable names (`excel.exe`); `make_scope()` refuses a drive or share root, a folder that does not exist, and one a FORBIDDEN entry covers for any access, collapses nesting, and caps both lists at 32. `Scope.contains()` compares canonical paths on a whole-component boundary and is what `TaskContext.in_scope` is. Scopes persist in the `scopes` table (`storage/scopes.py`, which only remembers), and `load_scope()` re-validates every stored folder, so a row can only ever come back **narrower** than it was saved. `Guardian.check_target()` is the re-check a tool makes **immediately before** acting: it canonicalises again, refuses FORBIDDEN, uncheckable and write-outside-scope, and returns the canonical path the tool must act on. The normaliser (`rules.canonical_path()`) now also refuses the **device namespace** (`\\.\C:\…`, pipes, `NUL`), **admin shares** and **this machine under any name** (`\\localhost\C$`, `127.1`, `2130706433`, its own hostname), and a local path whose **links lead to the network** — found by `lstat` and `readlink`, never by opening, because `realpath` on a symlink to a share hung 42 s here. `subst` drives are resolved; mapped network drives are read lexically and never opened. *Who may widen one (P3-17).* A folder enters a scope **only** because the person picked it in the OS dialog. The renderer's `core.request` reaches the core through MAIN with MAIN's own bearer token, so the token cannot say who sent a request; the two routes that add a folder therefore also require **`x-aegis-grant`**, an HMAC-SHA256 keyed with the session token over `METHOD\nTARGET\nBODY` (`server/auth.py` `grant_signature`, `main/core-gateway.ts` `grantSignature`, held to one test vector). MAIN adds it only in `scopes.create` / `scopes.addFolder`, after its own dialog returned a folder; the renderer names neither the folder nor the route. Everything else about a scope — listing, renaming, keeping fewer folders, deleting — can only narrow and needs the token alone: `PUT` refuses any folder the scope does not already list, in any spelling. `guardian/scope.py`'s `ScopeBook` is what the routes use; every scope it hands out has been through `load_scope()`. MAIN's `path-grants.ts` no longer keeps its own list of picked folders: `system.openPath` / `revealInExplorer` ask the core for the scopes' folders at each check, so there is one model of "the folders the person chose".
 
 ### 8.3 The user always wins (preemption)
 
@@ -414,7 +414,11 @@ GET  /models/catalog              -> model list per provider, + key and address 
 PUT  /models/keys/{provider_id}   -> save a key    body: {key}   -> {has_key, masked_key}
 DELETE /models/keys/{provider_id} -> remove a key
 GET  /models/spend                -> today's total + the ceilings it is measured against
-GET  /scopes  POST /scopes
+GET  /scopes                      -> {scopes: [ScopeInfo]}   each re-validated as read (P3-17)
+POST /scopes                      -> ScopeInfo     body: {name, folder}   MAIN-signed only (x-aegis-grant)
+POST /scopes/{id}/folders         -> ScopeInfo     body: {folder}         MAIN-signed only (x-aegis-grant)
+PUT  /scopes/{id}                 -> ScopeInfo     body: {name, folders}  narrows only: every folder must already be listed
+DELETE /scopes/{id}               -> {scopes: [ScopeInfo]}   the ones that remain
 POST /audit/verify                -> chain integrity result
 POST /audit/export                -> signed .zip report
 ```
@@ -489,6 +493,7 @@ window.aegis = {
   core: { request, subscribe, restart },   // proxied, token added in MAIN
   window: { minimize, maximize, close, onMaximizedChange, setOverlay },
   hotkeys: { get, set },
+  scopes: { create, addFolder },           // P3-17: MAIN opens the dialog and signs the request
   system: { pickFolder, openPath, revealInExplorer },
   updates: { check, install, onStatus },
   app: { version, logsPath, copyDiagnosticReport, onDeepLink },
@@ -529,6 +534,8 @@ pushes a `CoreStreamMessage` envelope over the `aegis:core:event` channel:
 | `reset` | nothing | drops everything derived from the stream; a full replay follows |
 | `connection` | `connecting` / `live` / `down` / `unavailable` | shows it; `unavailable` drives P0-17's screen |
 | `stopped` | a `KillSwitchStop`: `at` (ISO UTC), `outcome` (`acknowledged` / `terminated` / `no-core`), `elapsedMs` | P3-14. MAIN's own fact, sent to the main window **and** the HUD when a kill-switch press completes, and **again after every `reset`** (a terminated core's replacement resets the stream). The renderer keeps it across a reset and treats it as current until a `task.status` in `QUEUED`/`RUNNING`/`PAUSED_BY_USER`/`WAITING_APPROVAL` **with a later `ts`** arrives, so the replay of older events cannot clear it |
+
+**`scopes.create(name)` / `scopes.addFolder(scopeId)`** (P3-17). The only way a folder enters a scope. Each opens the OS folder picker **in MAIN** and sends the folder the person picked to the core with MAIN's `x-aegis-grant` signature (`§ 8.2`); the renderer passes a name or an id, never a folder or a route, so text scraped off a screen cannot widen what the agent may reach. A cancelled dialog resolves `null`; otherwise the value is the core's `CoreResponse` (a `ScopeInfo`, or a `400` whose `detail` says why not). `system.pickFolder` no longer grants anything: being in a scope is what makes a folder openable.
 
 **`window.maximize` / `window.onMaximizedChange`** (P0-15). `maximize()` is one
 toggle, not a maximise/restore pair: MAIN owns the window, so it decides which
