@@ -1,6 +1,7 @@
 import type { Decorator, Preview } from '@storybook/react-vite';
 import { INITIAL_MODELS, useModelsStore } from '../src/stores/models';
 import { INITIAL_RECOVERY, useRecoveryStore } from '../src/stores/recovery';
+import { INITIAL_RULES, useRulesStore } from '../src/stores/rules';
 import { INITIAL_STREAM, useStreamStore } from '../src/stores/stream';
 import { INITIAL_WINDOW, useWindowStore } from '../src/stores/window';
 import { installStoryBridge } from './story-bridge';
@@ -43,6 +44,7 @@ const preview: Preview = {
     useWindowStore.setState(INITIAL_WINDOW);
     useRecoveryStore.setState(INITIAL_RECOVERY);
     useModelsStore.setState(INITIAL_MODELS);
+    useRulesStore.setState(INITIAL_RULES);
   },
   parameters: {
     layout: 'fullscreen',

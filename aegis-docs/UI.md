@@ -251,6 +251,8 @@ Three sections, all directly editable:
 
 Plus scope management: named scopes (Work Files, Downloads, Photos…), each a folder list + app list, with a "what this allows" plain-English summary.
 
+*Built so far.* **Always allow** (P3-18, `AlwaysAllowRules`): each rule shows its tool, what it allows in words (the kind, never the approved call's details), the folder or task it is bound to, when it was made, and a one-click **Revoke**. One click is enough because revoking only takes a permission away; the worst a wrong click does is make Aegis ask again. The subtitle says the truth about reach: rules apply only under *Trusted* autonomy and never to dangerous actions. Then scope management (P3-17). *Times used*, **Always ask** and **Never** have no backend yet and belong to `P3-21`.
+
 ### 8.4 Models
 One card per role (`Planner`, `Grounder`, `Utility`): provider dropdown → model dropdown (from `/models/catalog`) → params (temperature, max tokens) → a **fallback chain** builder, bounded at four links because the router is. Below: **Providers** — paste a key, `Test` button showing what the provider said and how long it took, key displayed masked. A "Local (Ollama)" card auto-detects `127.0.0.1:11434` and shows installed models with a **"Nothing leaves your PC"** badge. Budget controls: per-task and per-day ceilings, with a live spend bar.
 

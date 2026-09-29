@@ -16,6 +16,7 @@ import { ApprovalDialog } from '@/components/ApprovalDialog';
 import { EngineUnavailable } from '@/components/EngineUnavailable';
 import { KillSwitchBar } from '@/components/KillSwitchBar';
 import { ModelsScreen } from '@/components/models/ModelsScreen';
+import { AlwaysAllowRules } from '@/components/AlwaysAllowRules';
 import { ScopeManager } from '@/components/ScopeManager';
 import { ScopePicker } from '@/components/ScopePicker';
 import { Button } from '@/components/ui/button';
@@ -99,8 +100,16 @@ export function AppShell(): ReactElement {
             ) : active.id === 'models' ? (
               <ModelsScreen />
             ) : active.id === 'rules' ? (
-              // `UI.md § 8.3` puts scope management in the Rules screen; the rule lists are P3-18.
-              <ScopeManager />
+              // `UI.md § 8.3`: the always-allow rules (P3-18), then scope management (P3-17).
+              // One scroll for the whole screen; each section keeps its natural height.
+              <div className="flex w-full flex-col overflow-y-auto">
+                <div className="shrink-0">
+                  <AlwaysAllowRules />
+                </div>
+                <div className="shrink-0">
+                  <ScopeManager />
+                </div>
+              </div>
             ) : (
               <p className="p-6 text-base text-text-dim">{active.empty}</p>
             )}
