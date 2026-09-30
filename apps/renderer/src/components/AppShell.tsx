@@ -12,7 +12,6 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { ApprovalDialog } from '@/components/ApprovalDialog';
 import { EngineUnavailable } from '@/components/EngineUnavailable';
 import { KillSwitchBar } from '@/components/KillSwitchBar';
 import { ModelsScreen } from '@/components/models/ModelsScreen';
@@ -118,8 +117,6 @@ export function AppShell(): ReactElement {
         <LiveView />
       </div>
       <Composer />
-      {/* `UI.md § 5`. Over everything until its own always-on-top window exists (P3-19). */}
-      <ApprovalDialog />
     </div>
   );
 }

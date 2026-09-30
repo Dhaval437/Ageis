@@ -50,3 +50,15 @@ export function resolveHudEntry(input: RendererEntryInput): RendererEntry {
   if (main.kind === 'url') return { kind: 'url', value: new URL('hud.html', main.value).href };
   return { kind: 'file', value: join(main.value, '..', 'hud.html') };
 }
+
+/**
+ * The approval window's page (P3-19): `approval.html` beside `index.html`, under the
+ * same rules as the HUD's.
+ */
+export function resolveApprovalEntry(input: RendererEntryInput): RendererEntry {
+  const main = resolveRendererEntry(input);
+  if (main.kind === 'url') {
+    return { kind: 'url', value: new URL('approval.html', main.value).href };
+  }
+  return { kind: 'file', value: join(main.value, '..', 'approval.html') };
+}

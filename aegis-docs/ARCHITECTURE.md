@@ -90,8 +90,8 @@ aegis/
 ├─ package.json  pnpm-workspace.yaml  turbo.json
 ├─ apps/
 │  ├─ desktop/                    # Electron MAIN + preload
-│  │  ├─ src/main/                # index.ts, supervisor.ts, hotkeys.ts, kill-switch.ts, watchdog.ts, task-activity.ts, overlay.ts, overlay-policy.ts, hud-channels.ts, updater.ts, ipc.ts
-│  │  ├─ src/preload/             # bridge.cts (the main window's surface), hud.cts (the OverlayHUD's, far narrower)
+│  │  ├─ src/main/                # index.ts, supervisor.ts, hotkeys.ts, kill-switch.ts, watchdog.ts, task-activity.ts, overlay.ts, overlay-policy.ts, hud-channels.ts, approval-window.ts, approval-policy.ts, approval-channels.ts, updater.ts, ipc.ts
+│  │  ├─ src/preload/             # bridge.cts (the main window's surface), hud.cts (the OverlayHUD's, far narrower), approval.cts (the approval window's: the stream and an answer)
 │  │  └─ electron-builder.yml
 │  └─ renderer/                   # React app
 │     ├─ src/screens/  src/components/  src/stores/  src/lib/
@@ -404,7 +404,7 @@ POST /tasks                       -> {task_id}     body: {goal, scope_id, autono
 GET  /tasks/{id}                  -> Task
 POST /tasks/{id}/pause|resume|stop
 POST /tasks/{id}/message          -> inject a mid-run instruction ("actually, use the other file")
-POST /approvals/{id}              -> {approval_id, choice, rule_id}   body: {choice: allow|deny|allow_always, rule?: exact|tool_in_folder|tool_for_task}  (P3-11)
+POST /approvals/{id}              -> {approval_id, choice, rule_id}   body: {choice: allow|deny|allow_always, rule?: exact|tool_in_folder|tool_for_task}  (P3-11). allow / allow_always are MAIN-signed only (x-aegis-grant, P3-19); deny needs only the token
 GET  /rules  DELETE /rules/{id}  -> {rules: [AllowRuleInfo]}   the always-allow rules, each revocable (P3-11)
 GET  /tasks/{id}/steps            -> [Step]
 POST /undo/{journal_id}
@@ -508,7 +508,21 @@ The OverlayHUD window (P3-13) does **not** get this surface. It has its own prel
 window.aegisHud = { subscribe, stop, showMain, deny }   // AegisHudBridge
 ```
 
-`stop` presses the kill switch, `deny(approvalId)` denies one approval (there is no `allow` — allowing happens only in the dialog, behind its input guard), `showMain` brings the main window forward, and `subscribe` is the same stream. Its channels (`main/hud-channels.ts`) answer only the HUD's `webContents`, the main window's refuse it, and `tests/hud-bridge.test.ts` holds the preload to that list and those four members.
+`stop` presses the kill switch, `deny(approvalId)` denies one approval (there is no `allow` — allowing happens only in the dialog, behind its input guard), `showMain` brings the main window forward (and, when a question is pending, the approval window back over it), and `subscribe` is the same stream. Its channels (`main/hud-channels.ts`) answer only the HUD's `webContents`, the main window's refuse it, and `tests/hud-bridge.test.ts` holds the preload to that list and those four members.
+
+The approval window (P3-19) has the third and smallest preload, `preload/approval.cts`:
+
+```ts
+window.aegisApproval = { subscribe, answer }   // AegisApprovalBridge
+```
+
+`subscribe` is the same stream; `answer(approvalId, choice, rule)` answers one pending question and resolves the core's own `CoreResponse`. It is **the only path that can allow anything**, and it is held at three places:
+
+- **The page** keeps the dialog's rules (`UI.md § 5`): Deny focused and always live, Allow disabled for 200 ms.
+- **MAIN** (`main/approval-policy.ts`) checks every answer again before it goes anywhere: the sender must be the approval window's own `webContents`, the id must be a question that is pending **right now** on the stream MAIN forwards, the choice must be one of the three with a rule kind exactly when it is `allow_always`, and *Allow* is refused for 200 ms after MAIN first saw the question. Only `approvalId`, `choice` and `rule` are carried on.
+- **The core** takes `allow` / `allow_always` on `POST /approvals/{id}` only with MAIN's `x-aegis-grant` signature over that exact request (`§ 9.1`, the same HMAC as the scope routes), and MAIN signs nothing but an answer that passed the check above. So the main window's generic `core.request` — and a HUD or a main-window page that has been talked into trying — gets a `403` and the question stays open. `deny` needs no signature: it only ever makes the agent do less.
+
+Its channels (`main/approval-channels.ts`) are its own, and `tests/approval-bridge.test.ts` holds the preload to that list and those two members.
 
 The typed contract lives in `packages/shared/src/bridge.ts` (`AegisBridge`) — the
 one hand-written TS type allowed by the §4 rule, because none of it mirrors a

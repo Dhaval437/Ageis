@@ -16,6 +16,7 @@ import {
   ruleLabel,
   secondsLeft,
   sendAnswer,
+  unreadableApprovals,
   type PendingApproval,
 } from '@/lib/approvals';
 import { cn } from '@/lib/utils';
@@ -25,7 +26,8 @@ import { useStreamStore } from '@/stores/stream';
 /**
  * The approval dialog (`UI.md § 5`, `P3-12`) — the highest-stakes screen in the
  * product. It asks the person about one `confirm` at a time, oldest first, and
- * answers with `POST /v1/approvals/{id}`.
+ * answers with `POST /v1/approvals/{id}`. It lives in its own always-on-top window
+ * (P3-19, `main/approval-window.ts`) and answers through that window's bridge.
  *
  * The rules it keeps, each for a reason:
  *
@@ -41,6 +43,8 @@ import { useStreamStore } from '@/stores/stream';
  * - **Nothing animates.** A moving dialog is a dialog people misclick.
  * - **The reversibility banner never lies.** It says "recoverable" only when the
  *   core says the tool has a real undo; otherwise it says it cannot be undone.
+ * - **A question it cannot read is never a blank window.** It says so and offers
+ *   *Deny*, and nothing else.
  */
 
 /** `UI.md § 5`: how long the Allow buttons stay disabled after a new approval. */
@@ -90,9 +94,79 @@ function TierChip({ tier }: { tier: RiskTier }): ReactElement {
 export function ApprovalDialog(): ReactElement | null {
   const events = useStreamStore((state) => state.events);
   const approval = useMemo(() => pendingApprovals(events)[0] ?? null, [events]);
-  if (approval === null) return null;
+  const unreadable = useMemo(() => unreadableApprovals(events)[0] ?? null, [events]);
+  if (approval === null) {
+    return unreadable === null ? null : <Unreadable key={unreadable} id={unreadable} />;
+  }
   // Keyed by id: a new question is a new dialog, with fresh focus, menu and guard.
   return <Dialog key={approval.id} approval={approval} />;
+}
+
+/**
+ * An open question whose event did not parse. Nothing of it is shown — it may be
+ * anything — and it cannot be allowed; the person can deny it now or let the core's
+ * timer do it.
+ */
+function Unreadable({ id }: { id: number }): ReactElement {
+  const sending = useApprovalStore((state) => state.sending?.id === id);
+  const notice = useApprovalStore((state) => (state.notice?.id === id ? state.notice.text : null));
+  const { begin, settle } = useApprovalStore.getState();
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    dialogRef.current?.querySelector<HTMLElement>('[data-approval-deny]')?.focus();
+  }, []);
+
+  async function deny(): Promise<void> {
+    if (sending) return;
+    begin(id, 'deny');
+    settle(id, answerFailure(await sendAnswer(id, 'deny'))?.text ?? null);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-surface-1">
+      <div
+        ref={dialogRef}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="approval-title"
+        aria-describedby="approval-unreadable"
+        onKeyDown={(event) => {
+          if (event.key !== 'Escape') return;
+          event.preventDefault();
+          void deny();
+        }}
+        className="flex min-h-full w-full flex-col justify-center p-5 text-text"
+      >
+        <h2
+          id="approval-title"
+          className="flex items-center gap-2 text-md font-medium text-caution"
+        >
+          <TriangleAlert aria-hidden className="size-5 shrink-0" />
+          Aegis needs your approval
+        </h2>
+        <p id="approval-unreadable" className="mt-3 text-sm text-text">
+          Aegis asked for your approval, but this window could not read the question, so you cannot
+          allow it. Aegis denies it when its timer runs out, or now if you press Deny.
+        </p>
+        <div className="mt-5 flex justify-end">
+          <Button
+            data-approval-deny
+            variant="secondary"
+            className="transition-none"
+            onClick={() => {
+              void deny();
+            }}
+          >
+            {sending ? 'Denying…' : 'Deny'}
+          </Button>
+        </div>
+        <p aria-live="assertive" className="mt-4 min-h-5 text-sm text-danger">
+          {notice}
+        </p>
+      </div>
+    </div>
+  );
 }
 
 function Dialog({ approval }: { approval: PendingApproval }): ReactElement {
@@ -167,9 +241,10 @@ function Dialog({ approval }: { approval: PendingApproval }): ReactElement {
   const HeaderIcon = TIER[approval.tier].icon;
 
   return (
-    // `app-no-drag`: Electron's titlebar drag region wins over anything stacked above it,
-    // so without it a click near the top of the dialog would move the window instead.
-    <div className="app-no-drag fixed inset-0 z-50 flex items-center justify-center bg-bg/80 p-4">
+    // It fills its own window (P3-19), which MAIN sizes to `UI.md § 3`'s 480 px and
+    // shows only while a question is pending. The window fits the longest question;
+    // a shorter one sits in the middle of it, and anything longer scrolls.
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-surface-1">
       <div
         ref={dialogRef}
         role="alertdialog"
@@ -177,7 +252,7 @@ function Dialog({ approval }: { approval: PendingApproval }): ReactElement {
         aria-labelledby="approval-title"
         aria-describedby="approval-prompt"
         onKeyDown={onKeyDown}
-        className="w-full max-w-120 rounded-card border border-border bg-surface-1 p-5 text-text"
+        className="flex min-h-full w-full flex-col justify-center p-5 text-text"
       >
         <div className="flex items-start justify-between gap-3">
           <h2
@@ -202,7 +277,7 @@ function Dialog({ approval }: { approval: PendingApproval }): ReactElement {
           <Button
             variant="ghost"
             size="sm"
-            className="mt-1 transition-none"
+            className="mt-1 self-start transition-none"
             onClick={() => {
               setExpanded((value) => !value);
             }}

@@ -124,16 +124,45 @@ def _broker(request: Request) -> ApprovalBroker:
     return broker
 
 
+#: What an *Allow* that MAIN did not sign is told (`P3-19`).
+NOT_THE_DIALOG: Final = "Only the approval dialog can allow this."
+
+
+async def _signed_by_main(request: Request) -> bool:
+    """Whether `x-aegis-grant` is MAIN's signature over this exact request.
+
+    The renderer reaches the core through MAIN's generic `core.request` with MAIN's own
+    token, so the token cannot tell the two apart. What only MAIN itself may ask for —
+    an *Allow* (`P3-19`), a folder entering a scope (`P3-17`) — also needs this.
+    """
+    auth: SessionAuth = request.app.state.auth
+    target = request.scope.get("raw_path", request.url.path.encode()).decode("latin-1")
+    query = request.scope.get("query_string", b"")
+    if query:
+        target = f"{target}?{query.decode('latin-1')}"
+    body = await request.body()
+    return auth.grant_matches(request.headers.get(GRANT_HEADER), request.method, target, body)
+
+
 @router.post("/approvals/{approval_id}", response_model=ApprovalResolved)
 async def answer_approval(
     request: Request, approval_id: Annotated[int, Path(ge=1)], body: ApprovalDecision
 ) -> ApprovalResolved:
     """The person's answer to an approval dialog.
 
+    **Anything but `deny` must be signed by MAIN** (403 otherwise, and the question
+    stays open). MAIN signs only what came from its approval window and passed its own
+    checks (`main/approval-policy.ts`), so the one page that can allow an action is
+    the dialog: the main window and the HUD can deny a question, which only ever makes
+    the agent do less, and nothing else.
+
     404 when there is nothing to answer — already answered, or already denied by its
     timer — so a late click can never approve anything. 400, with a sentence, for an
     answer that cannot be accepted (an *Allow always* the call is not eligible for).
     """
+    if body.choice != "deny" and not await _signed_by_main(request):
+        log.warning("approvals.unsigned_allow", extra={"approval_id": approval_id})
+        raise HTTPException(status_code=403, detail=NOT_THE_DIALOG)
     try:
         resolution = _broker(request).resolve(approval_id, body.choice, body.rule)
     except ApprovalNotFoundError as error:
@@ -212,13 +241,7 @@ def _book(request: Request) -> ScopeBook:
 
 async def _require_grant(request: Request) -> None:
     """403 unless MAIN signed this exact request. See the section comment above."""
-    auth: SessionAuth = request.app.state.auth
-    target = request.scope.get("raw_path", request.url.path.encode()).decode("latin-1")
-    query = request.scope.get("query_string", b"")
-    if query:
-        target = f"{target}?{query.decode('latin-1')}"
-    body = await request.body()
-    if not auth.grant_matches(request.headers.get(GRANT_HEADER), request.method, target, body):
+    if not await _signed_by_main(request):
         log.warning("scopes.unsigned_widening", extra={"path": request.url.path})
         raise HTTPException(status_code=403, detail=NOT_PICKED)
 

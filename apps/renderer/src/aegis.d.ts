@@ -1,4 +1,4 @@
-import type { AegisBridge, AegisHudBridge } from '@aegis/shared';
+import type { AegisApprovalBridge, AegisBridge, AegisHudBridge } from '@aegis/shared';
 
 /**
  * `window.aegis` — everything the renderer can reach (`ARCHITECTURE.md § 9.3`).
@@ -15,6 +15,11 @@ declare global {
      * preload is `hud.cts`; the main window never has it, hence optional.
      */
     readonly aegisHud?: AegisHudBridge;
+    /**
+     * The approval window's two-member surface (P3-19). Present only in that window,
+     * whose preload is `approval.cts`.
+     */
+    readonly aegisApproval?: AegisApprovalBridge;
   }
 }
 

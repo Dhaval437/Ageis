@@ -8,13 +8,13 @@
  * Landed so far: window, frameless shell for the custom titlebar, tray, the
  * single-instance lock (P0-02), the preload bridge (P0-04), the core
  * supervisor (P0-07), the event stream forwarded to the renderer (P0-09), the
- * kill switch (P3-06), the watchdog (P3-07), the OverlayHUD (P3-13) and what the
- * person sees when they stop the agent (P3-14).
+ * kill switch (P3-06), the watchdog (P3-07), the OverlayHUD (P3-13), what the
+ * person sees when they stop the agent (P3-14) and the approval window (P3-19).
  */
 
 import { app, globalShortcut } from 'electron';
 import type { BrowserWindow } from 'electron';
-import type { BridgeResult, CoreStreamMessage } from '@aegis/shared';
+import type { BridgeResult, CoreResponse, CoreStreamMessage } from '@aegis/shared';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createMainWindow } from './window.js';
@@ -33,11 +33,13 @@ import { createCoreStream, type CoreAvailability, type CoreStream } from './core
 import { createTaskActivity } from './task-activity.js';
 import { createWatchdog, type Watchdog, type WatchdogReport } from './watchdog.js';
 import { createOverlay, type Overlay } from './overlay.js';
+import { createApprovalWindow, type ApprovalWindow } from './approval-window.js';
+import type { ApprovalAnswer } from './approval-policy.js';
 import { createHudVisibility, type HudVisibility } from './hud-visibility.js';
 import { createStopFeedback, type StopFeedback } from './stop-feedback.js';
 import { flashScreens } from './flash.js';
 import { describeRelease, releaseModifiers } from './modifier-release.js';
-import { nativeKeyInput } from './win-input.js';
+import { nativeForeground, nativeKeyInput } from './win-input.js';
 import {
   createSupervisor,
   resolveCoreLaunch,
@@ -56,6 +58,7 @@ let coreStream: CoreStream | null = null;
 let killSwitch: KillSwitch | null = null;
 let watchdog: Watchdog | null = null;
 let overlay: Overlay | null = null;
+let approvalWindow: ApprovalWindow | null = null;
 let hudVisibility: HudVisibility | null = null;
 let stopFeedback: StopFeedback | null = null;
 /** Whether a task is running, learnt from the stream MAIN forwards (P3-07). */
@@ -124,6 +127,9 @@ function openMainWindow(): void {
   mainWindow.on('closed', () => {
     mainWindow = null;
     setTrayState({ windowVisible: false });
+    // Closing the main window quits. Said outright, because `window-all-closed` never
+    // fires while the approval window (always made, often hidden) or the HUD exists.
+    app.quit();
   });
 }
 
@@ -163,6 +169,8 @@ function bootstrap(): void {
     hudVisibility = null;
     overlay?.dispose();
     overlay = null;
+    approvalWindow?.dispose();
+    approvalWindow = null;
     tray?.destroy();
     tray = null;
     coreStream?.dispose();
@@ -233,8 +241,25 @@ function bootstrap(): void {
         stop: () => {
           void killSwitch?.trigger();
         },
-        showMain: showMainWindow,
+        // *Review* on a question: the main window, and the question back over it.
+        showMain: () => {
+          showMainWindow();
+          approvalWindow?.raise();
+        },
         deny: denyApproval,
+        onLoad: () => {
+          coreStream?.restart();
+        },
+      });
+      // `UI.md § 5`. Made now and kept hidden; shown only while a question is pending.
+      approvalWindow = createApprovalWindow({
+        entry: {
+          isPackaged: app.isPackaged,
+          devServerUrl: process.env['AEGIS_RENDERER_URL'],
+          appPath: app.getAppPath(),
+        },
+        answer: answerApproval,
+        foreground: nativeForeground(),
         onLoad: () => {
           coreStream?.restart();
         },
@@ -323,6 +348,7 @@ function forward(message: CoreStreamMessage): void {
   taskActivity.observe(message);
   bridge?.send.coreEvent(message);
   overlay?.send(message);
+  approvalWindow?.observe(message);
   hudVisibility?.observe();
 }
 
@@ -396,6 +422,37 @@ async function denyApproval(approvalId: number): Promise<BridgeResult<null>> {
     });
     if (response.status === 200 || response.status === 404) return { ok: true, value: null };
     return { ok: false, error: { code: 'failed', message: 'The engine refused the answer.' } };
+  } catch {
+    return { ok: false, error: { code: 'failed', message: 'The engine did not answer.' } };
+  }
+}
+
+/**
+ * One answer from the approval window (P3-19), already checked by `approval-policy.ts`.
+ * It goes to the core **signed as MAIN's**: the core takes an *Allow* only with that
+ * signature, so this is the one path that can allow anything. The core's own response
+ * is handed back, so the dialog can say why an answer did not land.
+ */
+async function answerApproval(answer: ApprovalAnswer): Promise<BridgeResult<CoreResponse>> {
+  const gateway = supervisor?.gateway() ?? null;
+  if (gateway === null) {
+    return { ok: false, error: { code: 'unavailable', message: 'The engine is not running.' } };
+  }
+  // A deny needs no signature, so it is never held up by the lack of one.
+  const send = gateway.grantedRequest ?? (answer.choice === 'deny' ? gateway.request : undefined);
+  if (send === undefined) {
+    return { ok: false, error: { code: 'unavailable', message: 'The engine is not running.' } };
+  }
+  try {
+    const response = await send({
+      method: 'POST',
+      path: `/approvals/${String(answer.approvalId)}`,
+      body:
+        answer.rule === null
+          ? { choice: answer.choice }
+          : { choice: answer.choice, rule: answer.rule },
+    });
+    return { ok: true, value: response };
   } catch {
     return { ok: false, error: { code: 'failed', message: 'The engine did not answer.' } };
   }

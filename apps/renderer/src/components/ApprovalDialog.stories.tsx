@@ -102,6 +102,11 @@ export const Error: Story = {
   }),
 };
 
+/** The question's event did not parse: nothing of it is shown, and only Deny is offered. */
+export const Unreadable: Story = {
+  beforeEach: state({ approval_id: 3, tool: 'fs.delete' }),
+};
+
 /** A caution-tier read that cannot be undone, with *Allow always* on offer. */
 export const ReadOutsideScope: Story = {
   beforeEach: state(READ, { armed: 2 }),

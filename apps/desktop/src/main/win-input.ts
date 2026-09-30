@@ -13,6 +13,11 @@
  *   Microsoft documents as extended, and `AEGIS_SIGNATURE` in `dwExtraInfo`, so
  *   nothing that watches for Aegis' own events mistakes it for the human.
  *
+ * It also carries the two calls the approval window needs to hand the focus back
+ * (P3-19): `GetForegroundWindow`, to note who had it before the dialog took it, and
+ * `SetForegroundWindow`, to return it when the dialog goes. A hidden window that
+ * still holds the focus would swallow the person's next keystrokes.
+ *
  * A child process was measured and rejected: the venv's Python takes ~95 ms to start
  * and PowerShell ~257 ms, and the kill switch's whole budget is 200 ms. A call
  * through here takes well under a microsecond.
@@ -44,7 +49,19 @@ export interface KeyInput {
   readonly keyUp: (vk: number) => void;
 }
 
+/** A window handle, as Windows gives it. Opaque: only ever handed back to Windows. */
+export type WindowHandle = number | bigint;
+
+export interface ForegroundWindows {
+  /** The window the person is working in right now, or `null` if there is none. */
+  readonly current: () => WindowHandle | null;
+  /** Ask Windows to bring `handle` to the front. `false` if it refused. */
+  readonly restore: (handle: WindowHandle) => boolean;
+}
+
 interface Native {
+  GetForegroundWindow: () => WindowHandle;
+  SetForegroundWindow: (handle: WindowHandle) => number;
   GetAsyncKeyState: (vk: number) => number;
   MapVirtualKeyW: (code: number, mapType: number) => number;
   SendInput: (count: number, inputs: unknown[], size: number) => number;
@@ -80,6 +97,8 @@ function load(): Native | null {
     const UNION = koffi.union('AEGIS_INPUT_UNION', { mi: MOUSEINPUT, ki: KEYBDINPUT });
     const INPUT = koffi.struct('AEGIS_INPUT', { type: 'uint32', u: UNION });
     native = {
+      GetForegroundWindow: user32.func('uintptr_t __stdcall GetForegroundWindow()'),
+      SetForegroundWindow: user32.func('int __stdcall SetForegroundWindow(uintptr_t hWnd)'),
       GetAsyncKeyState: user32.func('short __stdcall GetAsyncKeyState(int vKey)'),
       MapVirtualKeyW: user32.func('uint32 __stdcall MapVirtualKeyW(uint32 uCode, uint32 uMapType)'),
       SendInput: user32.func(
@@ -92,6 +111,19 @@ function load(): Native | null {
     native = null;
   }
   return native;
+}
+
+/** The real foreground window, or `null` where it cannot be asked for. */
+export function nativeForeground(): ForegroundWindows | null {
+  const api = load();
+  if (api === null) return null;
+  return {
+    current: () => {
+      const handle = api.GetForegroundWindow();
+      return Number(handle) === 0 ? null : handle;
+    },
+    restore: (handle) => api.SetForegroundWindow(handle) !== 0,
+  };
 }
 
 /** The real keyboard, or `null` where there is none to be had. */

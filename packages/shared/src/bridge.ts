@@ -15,6 +15,8 @@
  * enumerated, explicitly validated in MAIN, and there is no generic `invoke`.
  */
 
+import type { ApprovalChoice, RuleKind } from './api.js';
+
 /** Why a bridge call did not succeed. Never a stack trace, never a raw path. */
 export type BridgeErrorCode =
   /** The subsystem behind this call is not running yet (core down, feature unbuilt). */
@@ -257,4 +259,29 @@ export interface AegisHudBridge {
   showMain(): void;
   /** Denies one pending approval. There is no `allow`. */
   deny(approvalId: number): Promise<BridgeResult<null>>;
+}
+
+/**
+ * `window.aegisApproval` — the approval window's whole surface (P3-19), from its own
+ * preload (`preload/approval.cts`).
+ *
+ * The approval dialog lives in its own always-on-top window so a question can surface
+ * while the main window is hidden (`UI.md § 3`). That window needs two things: the
+ * stream, to know what to ask, and a way to answer. Nothing else — no generic core
+ * request, no files, no hotkeys, no windows.
+ *
+ * `answer` is checked again in MAIN (`main/approval-policy.ts`): the question must be
+ * pending, the choice valid, and *Allow* is refused for the dialog's 200 ms input
+ * guard, so a compromised page cannot skip it. The value is the core's own answer to
+ * `POST /v1/approvals/{id}`, so the dialog can say why an answer did not land.
+ */
+export interface AegisApprovalBridge {
+  /** The same stream the main window gets (`ARCHITECTURE.md § 9.2`). */
+  subscribe(listener: (message: CoreStreamMessage) => void): Unsubscribe;
+  /** Answer one pending approval. `rule` is required for `allow_always`, else `null`. */
+  answer(
+    approvalId: number,
+    choice: ApprovalChoice,
+    rule: RuleKind | null,
+  ): Promise<BridgeResult<CoreResponse>>;
 }

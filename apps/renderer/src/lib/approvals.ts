@@ -19,9 +19,10 @@ import {
  * however the question ends, and never shows a question nobody is waiting on.
  *
  * Every field is checked here: the payload crossed IPC, and `prompt` and `why`
- * carry text that can come from the screen. An event that does not parse is not
- * shown — and the dialog's absence then denies it by timeout, which is the safe
- * way for a malformed question to fail.
+ * carry text that can come from the screen. An event that does not parse is never
+ * shown as a question and can never be allowed: the dialog says it could not read
+ * it and offers only *Deny* (`unreadableApprovals`), and the core's timer denies it
+ * otherwise — the safe way for a malformed question to fail.
  */
 
 export interface PendingApproval {
@@ -92,19 +93,31 @@ export function parseApprovalRequest(event: StreamEvent): PendingApproval | null
   };
 }
 
+/** Open questions by id, oldest first; `null` for one that did not parse. */
+function openApprovals(events: readonly StreamEvent[]): Map<number, PendingApproval | null> {
+  const open = new Map<number, PendingApproval | null>();
+  for (const event of events) {
+    if (event.type !== 'approval.requested' && event.type !== 'approval.resolved') continue;
+    const id = event.payload['approval_id'];
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) continue;
+    if (event.type === 'approval.requested') open.set(id, parseApprovalRequest(event));
+    else open.delete(id);
+  }
+  return open;
+}
+
 /** Every approval still waiting for an answer, oldest first. */
 export function pendingApprovals(events: readonly StreamEvent[]): PendingApproval[] {
-  const pending = new Map<number, PendingApproval>();
-  for (const event of events) {
-    if (event.type === 'approval.requested') {
-      const approval = parseApprovalRequest(event);
-      if (approval !== null) pending.set(approval.id, approval);
-    } else if (event.type === 'approval.resolved') {
-      const id = event.payload['approval_id'];
-      if (typeof id === 'number') pending.delete(id);
-    }
-  }
-  return [...pending.values()];
+  return [...openApprovals(events).values()].filter((approval) => approval !== null);
+}
+
+/**
+ * The ids of open questions this build could not read, oldest first (P3-19). MAIN
+ * shows the approval window for any open question, so the dialog has to say something
+ * for these too; all it offers is *Deny*.
+ */
+export function unreadableApprovals(events: readonly StreamEvent[]): number[] {
+  return [...openApprovals(events)].filter(([, approval]) => approval === null).map(([id]) => id);
 }
 
 /** Whole seconds left before the core denies it; never negative. */
@@ -137,6 +150,11 @@ export interface AnswerNotice {
  */
 export function answerFailure(result: BridgeResult<CoreResponse>): AnswerNotice | null {
   if (result.ok && result.value.status >= 200 && result.value.status < 300) return null;
+  // MAIN refused it before it reached the core (`approval-policy.ts`). Its sentences
+  // are MAIN's own, never text from the page or the screen.
+  if (!result.ok && result.error.code === 'invalid_request' && result.error.message.length <= 200) {
+    return { text: result.error.message };
+  }
   if (result.ok && result.value.status === 404) {
     return {
       text: 'This question is already closed: it was answered, or it timed out and was denied.',
@@ -154,18 +172,21 @@ export function answerFailure(result: BridgeResult<CoreResponse>): AnswerNotice 
   };
 }
 
-/** `POST /v1/approvals/{id}`. Resolves, never rejects, like the bridge it calls. */
+/**
+ * `POST /v1/approvals/{id}`, through the approval window's own bridge (P3-19), which
+ * MAIN checks again before it reaches the core. Resolves, never rejects.
+ */
 export async function sendAnswer(
   id: number,
   choice: ApprovalChoice,
   rule: RuleKind | null = null,
 ): Promise<BridgeResult<CoreResponse>> {
+  const bridge = typeof window === 'undefined' ? undefined : window.aegisApproval;
+  if (bridge === undefined) {
+    return { ok: false, error: { code: 'unavailable', message: 'no approval bridge' } };
+  }
   try {
-    return await window.aegis.core.request({
-      method: 'POST',
-      path: `/approvals/${String(id)}`,
-      body: rule === null ? { choice } : { choice, rule },
-    });
+    return await bridge.answer(id, choice, rule);
   } catch {
     return { ok: false, error: { code: 'failed', message: 'bridge threw' } };
   }

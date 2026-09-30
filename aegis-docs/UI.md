@@ -177,13 +177,23 @@ Rules:
 - `Allow always ▾` opens a scoped choice: *this exact action* / *this tool in this folder* / *this tool for this task only*. Never a bare "allow everything forever". Every rule created here lands in the Rules screen where it can be revoked.
 - A **200 ms input-guard** disables the buttons on appear, so a click the user was already making cannot approve a deletion.
 
-*As built (P3-12)* — `components/ApprovalDialog.tsx`, mounted over the whole main window until its own always-on-top window exists (`P3-19`):
+*As built (P3-12)* — `components/ApprovalDialog.tsx`, shown in its own window (`P3-19`, below):
 - It is a function of the stream (`lib/approvals.ts`): it appears on `approval.requested` and closes on `approval.resolved`, which the core sends however the question ends. One question at a time, oldest first; every payload field is validated, and one that does not parse is never shown (the core then denies it by timeout).
 - **Deny is never disabled.** The input guard applies to *Allow once* and *Allow always* only, and restarts for every new question: denying is always safe, and Deny has the focus. `Esc` denies at any time.
 - The heading is the fixed "Aegis needs your approval" with the tier chip (word + icon + colour); the literal action — the tool's own `describe()` sentence — sits under it in mono, clipped at 280 characters with *Show all*, and the agent's reason is quoted after `Why:`.
 - The reversibility banner reads the event's `reversible` flag and shows the red *This cannot be undone* unless the core says `true`.
 - The countdown is display only, computed from the event's own timestamp so it agrees with the core's timer, which is the one that denies. A failed answer is announced in an `aria-live="assertive"` line.
-- `role="alertdialog"`, `aria-modal`, labelled heading, a Tab/Shift+Tab focus trap, focus returned on close, no transitions at all (the buttons override `Button`'s colour transition), and `app-no-drag` so the titlebar's drag region cannot steal a click on the dialog.
+- `role="alertdialog"`, `aria-modal`, labelled heading, a Tab/Shift+Tab focus trap, focus returned on close, no transitions at all (the buttons override `Button`'s colour transition).
+- A question whose event this build cannot read is never shown and can never be allowed: the dialog says it could not read the question and offers **Deny** only, and the core's timer denies it otherwise.
+
+*As built (P3-19)* — `main/approval-window.ts` + `approval-policy.ts`, page `approval.html`, preload `preload/approval.cts`:
+- The dialog has **its own window**, 480×660, frameless, centred, always on top at `screen-saver` level, and **not** click-through. 660 px is the longest question measured in the built app (a clipped prompt, a three-line reason and the open *Allow always* menu come to 647 px), so no button is ever below the fold; a shorter question sits in the middle of the window and anything longer scrolls. The main window no longer shows the dialog at all.
+- MAIN makes it **once, hidden, at startup**, and shows it for exactly as long as a question is pending: up on `approval.requested`, hidden the moment the last `approval.resolved` arrives (answered, timed out, stopped). It also hides when the engine goes down, since nobody is then waiting on the answer. After a stream `reset` it holds for 1 s, because the replay asks the open questions again and the window should not blink.
+- It is **the one place Aegis asks for the focus**. Windows may refuse a background app the foreground; the window is on top either way, and nothing waits on the focus — the core's timer denies an unanswered question regardless. When it hides while still holding the focus, it **hands the focus back** to the window that had it before; if the person has already clicked elsewhere, it leaves them there.
+- It is **excluded from screen capture**, like the HUD: the model must never see, or ground a click on, the buttons that approve its own actions.
+- **Closing the window (`Alt`+`F4`) denies** the question it shows; the window itself stays, hidden when the core confirms.
+- The HUD's **Review** brings the main window forward and the question back over it.
+- **Only this window can allow.** Its preload has two members (`subscribe`, `answer`); MAIN checks every answer again (pending right now, a valid choice, *Allow* refused for the same 200 ms) and signs it, and the core takes an *Allow* with no other signature (`ARCHITECTURE.md § 9.3`). The main window and the HUD can deny a question and nothing more.
 
 ---
 

@@ -8,6 +8,7 @@ import {
   pendingApprovals,
   ruleLabel,
   secondsLeft,
+  unreadableApprovals,
 } from '@/lib/approvals';
 import { INITIAL_APPROVAL_UI, useApprovalStore } from '@/stores/approval';
 import { INITIAL_STREAM, reduceStream, useStreamStore } from '@/stores/stream';
@@ -66,8 +67,10 @@ const answered: BridgeResult<CoreResponse> = {
   ok: true,
   value: { status: 200, body: { approval_id: 1, choice: 'allow', rule_id: null } },
 };
-const request = vi.fn((_req: unknown): Promise<BridgeResult<CoreResponse>> =>
-  Promise.resolve(answered),
+/** `window.aegisApproval.answer` (P3-19): the dialog's only way to answer. */
+const request = vi.fn(
+  (_id: number, _choice: string, _rule: string | null): Promise<BridgeResult<CoreResponse>> =>
+    Promise.resolve(answered),
 );
 
 beforeEach(() => {
@@ -76,7 +79,7 @@ beforeEach(() => {
   request.mockResolvedValue(answered);
   useStreamStore.setState(INITIAL_STREAM);
   useApprovalStore.setState(INITIAL_APPROVAL_UI);
-  vi.stubGlobal('aegis', { core: { request } });
+  vi.stubGlobal('aegisApproval', { answer: request, subscribe: vi.fn() });
 });
 
 afterEach(() => {
@@ -147,11 +150,7 @@ describe('ApprovalDialog', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Allow once' }));
     await settle();
-    expect(request).toHaveBeenCalledExactlyOnceWith({
-      method: 'POST',
-      path: '/approvals/1',
-      body: { choice: 'allow' },
-    });
+    expect(request).toHaveBeenCalledExactlyOnceWith(1, 'allow', null);
   });
 
   it('denies on Deny and on Esc, even inside the guard', async () => {
@@ -159,11 +158,7 @@ describe('ApprovalDialog', () => {
     show(requested());
     fireEvent.keyDown(screen.getByRole('alertdialog'), { key: 'Escape' });
     await settle();
-    expect(request).toHaveBeenLastCalledWith({
-      method: 'POST',
-      path: '/approvals/1',
-      body: { choice: 'deny' },
-    });
+    expect(request).toHaveBeenLastCalledWith(1, 'deny', null);
   });
 
   it('closes when the core says the question is closed, however it ended', () => {
@@ -227,11 +222,7 @@ describe('ApprovalDialog', () => {
     expect(screen.getByRole('button', { name: 'This tool, for this task only' })).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'This tool in c:\\docs' }));
     await settle();
-    expect(request).toHaveBeenCalledExactlyOnceWith({
-      method: 'POST',
-      path: '/approvals/2',
-      body: { choice: 'allow_always', rule: 'tool_in_folder' },
-    });
+    expect(request).toHaveBeenCalledExactlyOnceWith(2, 'allow_always', 'tool_in_folder');
   });
 
   it('says so, assertively, when an answer does not land', async () => {
@@ -242,6 +233,59 @@ describe('ApprovalDialog', () => {
     await settle();
     const notice = screen.getByText(/could not send your answer/);
     expect(notice.closest('[aria-live="assertive"]')).not.toBeNull();
+  });
+
+  it("shows MAIN's own sentence when MAIN refused the answer", async () => {
+    request.mockResolvedValue({
+      ok: false,
+      error: {
+        code: 'invalid_request',
+        message: 'That was too soon after the question appeared. Try again.',
+      },
+    });
+    render(<ApprovalDialog />);
+    show(requested());
+    fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
+    await settle();
+    expect(
+      screen.getByText('That was too soon after the question appeared. Try again.'),
+    ).toBeVisible();
+  });
+
+  it('says it could not send when there is no approval bridge at all', async () => {
+    vi.stubGlobal('aegisApproval', undefined);
+    render(<ApprovalDialog />);
+    show(requested());
+    fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
+    await settle();
+    expect(screen.getByText(/could not send your answer/)).toBeVisible();
+  });
+
+  it('says it cannot read a malformed question, shows none of it, and offers only Deny', async () => {
+    render(<ApprovalDialog />);
+    show(requested({ approval_id: 6, tool: 'fs.delete', prompt: 'Delete everything' }));
+    expect(screen.getByRole('alertdialog', { name: 'Aegis needs your approval' })).toBeVisible();
+    expect(screen.getByText(/could not read the question/)).toBeVisible();
+    expect(screen.queryByText(/Delete everything/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /allow/i })).toBeNull();
+    const deny = screen.getByRole('button', { name: 'Deny' });
+    expect(deny).toHaveFocus();
+    fireEvent.click(deny);
+    await settle();
+    expect(request).toHaveBeenCalledExactlyOnceWith(6, 'deny', null);
+    fireEvent.keyDown(screen.getByRole('alertdialog'), { key: 'Escape' });
+    await settle();
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks what it can read before saying a question is unreadable, and closes with it', () => {
+    const { container } = render(<ApprovalDialog />);
+    show(requested({ approval_id: 6 }), requested({ ...BASE, approval_id: 7 }));
+    expect(screen.getByRole('button', { name: 'Allow once' })).toBeVisible();
+    show(resolved(7));
+    expect(screen.getByText(/could not read the question/)).toBeVisible();
+    show(resolved(6));
+    expect(container).toBeEmptyDOMElement();
   });
 
   it('counts down from the core’s own timestamp', () => {
@@ -291,6 +335,18 @@ describe('approvals, from the stream', () => {
     const b = requested({ ...BASE, approval_id: 2 });
     expect(pendingApprovals([a, b]).map((p) => p.id)).toEqual([1, 2]);
     expect(pendingApprovals([a, b, resolved(1)]).map((p) => p.id)).toEqual([2]);
+  });
+
+  it('lists open questions that do not parse, until they are resolved', () => {
+    const events = [
+      requested({ approval_id: 6 }),
+      requested({ ...BASE, approval_id: 7 }),
+      requested({ ...BASE, approval_id: 8, tier: 'HARMLESS' }),
+      requested({ ...BASE, approval_id: 'nine' }),
+    ];
+    expect(unreadableApprovals(events)).toEqual([6, 8]);
+    expect(pendingApprovals(events).map((a) => a.id)).toEqual([7]);
+    expect(unreadableApprovals([...events, resolved(6)])).toEqual([8]);
   });
 
   it('never counts below zero', () => {
