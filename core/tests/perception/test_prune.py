@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import logging
 import sys
-import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 
 import pytest
@@ -37,6 +36,7 @@ from aegis_core.perception.redact import redact_tree  # noqa: E402
 from aegis_core.perception.uia_tree import MAX_ELEMENTS, UiaElement, UiaTree, walk  # noqa: E402
 
 from tests.perception.helpers import FormWindow  # noqa: E402
+from tests.perception.pace import assert_keeps_pace, perf_benchmark, wall_clock_ms  # noqa: E402
 
 
 def _monitor(left: int, width: int, *, primary: bool) -> Monitor:
@@ -485,7 +485,17 @@ def test_no_screen_text_reaches_the_log(caplog: pytest.LogCaptureFixture) -> Non
             assert secret not in text
 
 
-def test_a_tree_at_the_walk_cap_prunes_well_inside_the_observation_budget() -> None:
+#: Half of the 400 ms a whole observation has. Measured idle: ~65 ms.
+PRUNE_BUDGET_MS = 200.0
+
+#: Pruning a tree at the walk cap, in units of `pace.py`'s calibration. Measured
+#: (`P2-15`) at 0.80 to 1.02 with 0 to 20 busy processes, while the prune itself
+#: took 65 to 286 ms; the ceiling is twice the worst reading.
+PRUNE_TO_CALIBRATION_CEILING = 2.0
+
+
+def tree_at_the_walk_cap() -> UiaTree:
+    """`MAX_ELEMENTS` elements, nested ten deep in groups of fifty."""
     t = Tree()
     parent = t.root
     for i in range(MAX_ELEMENTS - 1):
@@ -494,12 +504,28 @@ def test_a_tree_at_the_walk_cap_prunes_well_inside_the_observation_budget() -> N
         added = t.add(parent, role, f"Element {i}", bbox=Rect(200, 200, 400, 230))
         if role == "Group":
             parent = added
-    tree = t.build()
-    started = time.perf_counter()
-    pruned = prune(tree, goal="open element 4000")
-    elapsed = time.perf_counter() - started
-    assert len(pruned.candidates) == MAX_CANDIDATES
-    assert elapsed < 0.2, f"{elapsed * 1000:.0f} ms"  # the whole observation has 400 ms
+    return t.build()
+
+
+def prune_the_largest_tree() -> Callable[[], PrunedTree]:
+    tree = tree_at_the_walk_cap()
+    return lambda: prune(tree, goal="open element 4000")
+
+
+def test_a_tree_at_the_walk_cap_prunes_to_the_candidate_limit() -> None:
+    assert len(prune_the_largest_tree()().candidates) == MAX_CANDIDATES
+
+
+def test_pruning_a_tree_at_the_walk_cap_keeps_pace_with_a_fixed_workload() -> None:
+    """Held as a ratio, not a wall-clock time (`pace.py`): a 200 ms ceiling was missed
+    at 208 and 218 ms on a busy laptop with this code unchanged."""
+    assert_keeps_pace(prune_the_largest_tree(), PRUNE_TO_CALIBRATION_CEILING)
+
+
+@perf_benchmark
+def test_a_tree_at_the_walk_cap_prunes_well_inside_the_observation_budget() -> None:
+    elapsed = wall_clock_ms(prune_the_largest_tree())
+    assert elapsed < PRUNE_BUDGET_MS, f"{elapsed:.0f} ms"
 
 
 # --------------------------------------------------------------------------- #

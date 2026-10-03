@@ -10,8 +10,7 @@ from __future__ import annotations
 import logging
 import random
 import sys
-import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 import pytest
 
@@ -40,6 +39,7 @@ from aegis_core.perception.uia_tree import walk  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 
 from tests.perception.helpers import FormWindow  # noqa: E402
+from tests.perception.pace import assert_keeps_pace, perf_benchmark, wall_clock_ms  # noqa: E402
 from tests.perception.test_redact import Tree, window  # noqa: E402
 
 SCREEN = Rect(0, 0, 1600, 1000)
@@ -317,7 +317,18 @@ def test_nothing_but_a_timing_reaches_the_log(caplog: pytest.LogCaptureFixture) 
     assert isinstance(vars(record)["ms"], float)
 
 
-def test_hashing_a_full_monitor_frame_is_cheap() -> None:
+#: A hash may cost no more than the capture it describes, which takes ~50 ms.
+#: Measured idle: ~15 ms.
+HASH_BUDGET_MS = 50.0
+
+#: Hashing a 3200x2000 frame, in units of `pace.py`'s calibration. Measured
+#: (`P2-15`) at 0.18 to 0.31 with 0 to 20 busy processes, while the hash itself took
+#: 14 to 110 ms; the ceiling is twice the worst reading.
+HASH_TO_CALIBRATION_CEILING = 0.62
+
+
+def hash_a_full_monitor() -> Callable[[], object]:
+    """One hash of a 3200x2000 frame, as one call to time."""
     region = Rect(0, 0, 3200, 2000)
     layout = DisplayLayout(
         monitors=(Monitor(device="D0", bounds=region, work_area=region, dpi=192, primary=True),),
@@ -328,14 +339,38 @@ def test_hashing_a_full_monitor_frame_is_cheap() -> None:
         trees=(),
         boxes=(),
     )
-    phash(observation)  # warm up
-    timings = []
-    for _ in range(5):
-        started = time.perf_counter()
-        phash(observation)
-        timings.append(time.perf_counter() - started)
-    median = sorted(timings)[2]
-    assert median < 0.05, f"{median * 1000:.1f} ms"  # the capture itself takes ~50 ms
+    return lambda: phash(observation)
+
+
+def test_hashing_a_full_monitor_frame_keeps_pace_with_a_fixed_workload() -> None:
+    """Held as a ratio, not a wall-clock time (`pace.py`): a 50 ms ceiling was missed
+    at 52 ms on a busy laptop with this code unchanged."""
+    assert_keeps_pace(hash_a_full_monitor(), HASH_TO_CALIBRATION_CEILING)
+
+
+def test_the_frame_is_shrunk_in_colour_before_it_is_made_grey(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What keeps the hash cheap, with no clock in it: only a few thousand pixels are
+    ever converted to grey, never the frame's 6.4 million."""
+    converted: list[tuple[int, int]] = []
+    real_convert = Image.Image.convert
+
+    def spy(self: Image.Image, *args: object, **kwargs: object) -> Image.Image:
+        converted.append(self.size)
+        return real_convert(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    work = hash_a_full_monitor()
+    monkeypatch.setattr(Image.Image, "convert", spy)
+    work()
+    assert converted, "the hash should convert the frame to grey"
+    assert max(width * height for width, height in converted) <= (GRID_WIDTH * 8) ** 2
+
+
+@perf_benchmark
+def test_hashing_a_full_monitor_frame_fits_the_budget() -> None:
+    elapsed = wall_clock_ms(hash_a_full_monitor())
+    assert elapsed < HASH_BUDGET_MS, f"{elapsed:.1f} ms"
 
 
 # --------------------------------------------------------------------------- #

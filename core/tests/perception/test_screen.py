@@ -28,7 +28,6 @@ import statistics
 import sys
 import threading
 import time
-import zlib
 from collections.abc import Iterator
 from ctypes import wintypes
 from typing import Any
@@ -66,15 +65,13 @@ from aegis_core.perception.screen import (  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 from tests.perception.helpers import SolidWindow  # noqa: E402
+from tests.perception.pace import PERF_ENV, assert_keeps_pace  # noqa: E402
 
 RED = (255, 0, 0)
 BLUE = (0, 0, 255)
 
 #: `PROGRESS.md` P2-02.
 BUDGET_MS = 150.0
-
-#: Opts into the live capture benchmark.
-PERF_ENV = "AEGIS_PERF"
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -584,17 +581,6 @@ def busy_desktop(width: int = 3200, height: int = 2000) -> Frame:
 ENCODE_TO_CALIBRATION_CEILING = 3.2
 
 
-def calibration_text() -> bytes:
-    """~1 MB of seeded word-like text for zlib: the same bytes every run, and work
-    the CPU does the same way the encode does (a C loop over a large buffer), so
-    load, turbo clocks and battery throttling slow both alike."""
-    rnd = random.Random(5)  # noqa: S311 - a fixed workload for a timing test, not secrets
-    words = [
-        bytes(rnd.choice(b"abcdefghij ") for _ in range(rnd.randint(3, 9))) for _ in range(500)
-    ]
-    return b" ".join(rnd.choice(words) for _ in range(250_000))[:1_000_000]
-
-
 def test_downscaling_and_encoding_a_busy_desktop_keep_pace_with_a_fixed_workload() -> None:
     """The half of P2-02's budget this module controls, on content that cannot vary,
     measured against the machine's own speed at that moment.
@@ -604,21 +590,10 @@ def test_downscaling_and_encoding_a_busy_desktop_keep_pace_with_a_fixed_workload
     time grows under load too (and ticks in 15.6 ms steps
     on Windows). A calibration timed *alternately* with the encode sees the same
     load, and each pair's ratio is taken before the median, so load that comes and
-    goes during the test cancels out rather than landing on one side.
+    goes during the test cancels out rather than landing on one side (`pace.py`,
+    which the other perception budgets now share, `P2-15`).
     """
-    frame = busy_desktop()
-    text = calibration_text()
-    frame._encode()  # first calls pay for the codec's and zlib's setup
-    zlib.compress(text, 6)
-    ratios: list[float] = []
-    for _ in range(7):
-        started = time.perf_counter()
-        zlib.compress(text, 6)
-        calibration = time.perf_counter() - started
-        started = time.perf_counter()
-        frame._encode()
-        ratios.append((time.perf_counter() - started) / calibration)
-    assert statistics.median(ratios) < ENCODE_TO_CALIBRATION_CEILING, ratios
+    assert_keeps_pace(busy_desktop()._encode, ENCODE_TO_CALIBRATION_CEILING)
 
 
 def test_the_encoder_runs_libwebps_fastest_method(monkeypatch: pytest.MonkeyPatch) -> None:

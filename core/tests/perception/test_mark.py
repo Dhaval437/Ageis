@@ -16,8 +16,7 @@ test opens.
 from __future__ import annotations
 
 import sys
-import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 
 import pytest
@@ -57,6 +56,7 @@ from aegis_core.perception.uia_tree import UiaElement, UiaTree, walk  # noqa: E4
 from PIL import Image, ImageDraw  # noqa: E402
 
 from tests.perception.helpers import FormWindow  # noqa: E402
+from tests.perception.pace import assert_keeps_pace, perf_benchmark, wall_clock_ms  # noqa: E402
 
 SCREEN = Rect(0, 0, 400, 300)
 LAYOUT = DisplayLayout(
@@ -436,24 +436,46 @@ def test_scaling_a_box_matches_the_mapping_screenshot_documents() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_drawing_a_full_page_of_marks_is_cheap() -> None:
-    """The encode is `P2-02`'s cost and dominates; what `P2-06` adds is the drawing.
+#: `P2-06`'s budget for the drawing alone: the slack left in the 400 ms an
+#: observation has once capture and encode are paid for. Measured idle: ~40 ms.
+DRAW_BUDGET_MS = 150.0
 
-    Measured here: 200 marks on a 1280x800 image, ~60 ms. The budget is the slack
-    left in the 400 ms an observation has once capture and encode are paid for.
-    """
-    observation, candidates = big_observation(grid(MAX_MARKS))
+#: Drawing a full page of marks, in units of `pace.py`'s calibration. Measured
+#: (`P2-15`) at 0.48 to 0.65 with 0 to 20 busy processes, while the drawing itself
+#: took 38 to 383 ms; the ceiling is twice the worst reading.
+DRAW_TO_CALIBRATION_CEILING = 1.3
+
+
+def draw_a_full_page() -> Callable[[], None]:
+    """`MAX_MARKS` marks onto a fresh 1280x800 image, as one call to time."""
+    observation, _ = big_observation(grid(MAX_MARKS))
     image = observation.frame._to_image(MAX_EDGE)
     marks = [
         mark_module.Mark(element_id=i, box=box, image_box=box)
         for i, box in enumerate(grid(MAX_MARKS), start=1)
     ]
     _font()  # the face is loaded once per process, not once per observation
-    started = time.perf_counter()
-    mark_module._draw(image, marks)
-    elapsed = time.perf_counter() - started
-    assert elapsed < 0.15, f"{elapsed * 1000:.0f} ms"
+    return lambda: mark_module._draw(image.copy(), marks)
+
+
+def test_a_full_page_of_marks_is_marked() -> None:
+    observation, candidates = big_observation(grid(MAX_MARKS))
     assert len(mark(observation, candidates).marks) == MAX_MARKS
+
+
+def test_drawing_a_full_page_of_marks_keeps_pace_with_a_fixed_workload() -> None:
+    """The encode is `P2-02`'s cost and dominates; what `P2-06` adds is the drawing.
+
+    Held as a ratio, not a wall-clock time (`pace.py`): a 150 ms ceiling was missed
+    at 165 ms on a busy laptop with this code unchanged.
+    """
+    assert_keeps_pace(draw_a_full_page(), DRAW_TO_CALIBRATION_CEILING)
+
+
+@perf_benchmark
+def test_drawing_a_full_page_of_marks_fits_the_budget() -> None:
+    elapsed = wall_clock_ms(draw_a_full_page())
+    assert elapsed < DRAW_BUDGET_MS, f"{elapsed:.0f} ms"
 
 
 # --------------------------------------------------------------------------- #
