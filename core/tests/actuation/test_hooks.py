@@ -314,6 +314,60 @@ def test_listeners_run_off_the_hook_thread(signal: PreemptSignal, keys_only: Inp
     assert seen == ["aegis-preempt-watch"]
 
 
+def preempt(signal: PreemptSignal) -> None:
+    signal.trigger(PreemptEvent("keyboard", win32.WM_KEYDOWN, time.perf_counter()))
+
+
+def test_a_raising_listener_does_not_stop_the_one_that_pauses(
+    signal: PreemptSignal, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`PAUSED_BY_USER` hangs off a listener; another listener's bug must not cost it."""
+
+    def broken(event: PreemptEvent) -> None:
+        raise RuntimeError("a listener bug")
+
+    paused: list[PreemptEvent] = []
+    signal.add_listener(broken)
+    signal.add_listener(paused.append)
+
+    with signal.watch():
+        preempt(signal)
+        assert helpers.wait_until(lambda: bool(paused)), "the pause listener never ran"
+
+    assert signal.listener_errors == 1
+    assert "preempt.listener_failed" in caplog.text
+
+
+def test_listeners_fire_again_after_a_resume(signal: PreemptSignal) -> None:
+    """Once per preemption, not once per `watch()`: the second takeover pauses too."""
+    seen: list[float] = []
+    signal.add_listener(lambda event: seen.append(event.at))
+
+    with signal.watch():
+        preempt(signal)
+        assert helpers.wait_until(lambda: len(seen) == 1)
+        signal.clear()  # the user resumed
+        preempt(signal)
+        assert helpers.wait_until(lambda: len(seen) == 2), "the second preemption was not heard"
+
+    assert seen[0] < seen[1]
+
+
+def test_a_preemption_still_in_progress_is_dispatched_once(signal: PreemptSignal) -> None:
+    """A hand on the mouse triggers on every move; the task pauses once, not per event."""
+    seen: list[PreemptEvent] = []
+    signal.add_listener(seen.append)
+
+    with signal.watch():
+        for _ in range(20):
+            preempt(signal)
+            time.sleep(0.005)
+        assert helpers.wait_until(lambda: bool(seen))
+        time.sleep(0.1)  # five watcher polls in which a repeat would show
+
+    assert len(seen) == 1
+
+
 # ---------------------------------------------------------------------------
 # When a live test misses: the miss must name its cause (P3-16).
 # ---------------------------------------------------------------------------

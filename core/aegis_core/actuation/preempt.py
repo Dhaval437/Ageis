@@ -19,6 +19,7 @@ Windows-only, like the rest of AEGIS (`REMEMBER.md § 4`).
 from __future__ import annotations
 
 import ctypes
+import logging
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -30,6 +31,8 @@ from typing import Literal
 
 from aegis_core.actuation import win32
 from aegis_core.actuation.signature import AEGIS_SIGNATURE
+
+log = logging.getLogger(__name__)
 
 PreemptSource = Literal["mouse", "keyboard"]
 
@@ -63,6 +66,10 @@ class PreemptSignal:
         self._last: PreemptEvent | None = None
         self._listeners: list[Callable[[PreemptEvent], None]] = []
         self._listener_lock = threading.Lock()
+        self._listener_errors = 0
+        #: Bumped by every `clear()`, so the watcher can tell a new preemption
+        #: from the one it already dispatched while the signal stayed set.
+        self._resumes = 0
 
     # -- hook thread --------------------------------------------------------
 
@@ -84,6 +91,11 @@ class PreemptSignal:
     def last(self) -> PreemptEvent | None:
         return self._last
 
+    @property
+    def listener_errors(self) -> int:
+        """Exceptions raised by listeners. Each is logged; the others still ran."""
+        return self._listener_errors
+
     def wait(self, timeout: float | None = None) -> bool:
         """Block until preempted. Doubles as the abort-aware sleep in `input.py`."""
         return self._event.wait(timeout)
@@ -92,12 +104,15 @@ class PreemptSignal:
         """Re-arm. Only the resume path may call this — never an action itself."""
         self._event.clear()
         self._last = None
+        self._resumes += 1
 
     def add_listener(self, listener: Callable[[PreemptEvent], None]) -> None:
         """Register a reaction (pause the task, emit `preempt.triggered`, …).
 
         Listeners run on the watcher thread started by `watch()`, never on the
-        hook thread. They fire once per preemption.
+        hook thread. They fire once per preemption — again after each `clear()`
+        — and one that raises is logged without stopping the ones after it: the
+        listener that pauses the task must not depend on every other one working.
         """
         with self._listener_lock:
             self._listeners.append(listener)
@@ -108,17 +123,28 @@ class PreemptSignal:
         stop = threading.Event()
 
         def pump() -> None:
+            dispatched: int | None = None
             while not stop.is_set():
                 if not self._event.wait(_WATCH_POLL_S):
                     continue
+                # Read before `_last`: a `clear()` landing in between then
+                # leaves `event` None, never a stale event under a new count.
+                resumes = self._resumes
                 event = self._last
-                if event is None:  # cleared between the wait and the read
+                if event is None or resumes == dispatched:
+                    # Cleared between the wait and the read, or this preemption
+                    # was already dispatched and the signal is still set.
+                    stop.wait(_WATCH_POLL_S)
                     continue
+                dispatched = resumes
                 with self._listener_lock:
                     listeners = tuple(self._listeners)
                 for listener in listeners:
-                    listener(event)
-                return
+                    try:
+                        listener(event)
+                    except Exception:  # the next listener may be the one that pauses
+                        self._listener_errors += 1
+                        log.exception("preempt.listener_failed")
 
         thread = threading.Thread(target=pump, name="aegis-preempt-watch", daemon=True)
         thread.start()
