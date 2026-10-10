@@ -27,6 +27,9 @@ from aegis_core.actuation.signature import AEGIS_SIGNATURE  # noqa: E402
 BACKEND_METHODS = frozenset(
     {"key", "unicode_char", "mouse_move", "mouse_move_absolute", "mouse_button", "scroll"}
 )
+#: Methods that only *read* Windows' state (`P3-20`). Locked separately, and checked
+#: below to send nothing at all — so they cannot be an untagged path either.
+READ_ONLY_METHODS = frozenset({"blocker", "key_is_down", "button_is_down"})
 
 
 @pytest.fixture
@@ -54,7 +57,16 @@ def test_no_untagged_code_path_exists() -> None:
         for name in vars(SendInputBackend)
         if not name.startswith("_") and callable(getattr(SendInputBackend, name))
     }
-    assert public == BACKEND_METHODS
+    assert public == BACKEND_METHODS | READ_ONLY_METHODS
+
+
+def test_the_read_only_methods_send_nothing(captured: list[win32.INPUT]) -> None:
+    backend = SendInputBackend()
+    backend.blocker()
+    backend.key_is_down(VK_LCONTROL)
+    for button in MouseButton:
+        backend.button_is_down(button)
+    assert captured == []
 
 
 def test_every_event_type_is_tagged(captured: list[win32.INPUT]) -> None:

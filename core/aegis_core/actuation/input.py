@@ -24,10 +24,19 @@ Windows maps them to and the extended flag `keys.is_extended()` decides, so an a
 that reads scan codes sees the key that was meant. Given a `Motion` (`motion.py`,
 `P3-03`), the pointer travels a human-like path to its target and rests there
 before a press, so hover states have the moves and the moment they need.
+
+**Behind a higher-integrity window (`P3-20`, `integrity.py`)** Windows drops all
+of our input while `SendInput` reports success, and our hooks cannot see the
+human either. So every checkpoint also asks the backend whether its events can
+land; if not, the action stops with `WalledOffError` and the preemption signal is
+set, which pauses the task like a takeover. A release sent in that state is
+dropped too, so it is recorded as *owed* and sent again, by a thread of its own,
+the moment the foreground stops outranking us.
 """
 
 from __future__ import annotations
 
+import logging
 import random
 import threading
 import time
@@ -37,6 +46,7 @@ from enum import StrEnum
 from typing import Protocol
 
 from aegis_core.actuation import win32
+from aegis_core.actuation.integrity import Blocker, foreground_blocker
 from aegis_core.actuation.keys import (
     MODIFIER_VKS,
     VK_CONTROL,
@@ -56,7 +66,7 @@ from aegis_core.actuation.keys import (
 )
 from aegis_core.actuation.killswitch import KillSwitch
 from aegis_core.actuation.motion import Motion, duration, dwell, plan_path
-from aegis_core.actuation.preempt import PreemptSignal
+from aegis_core.actuation.preempt import PreemptEvent, PreemptSignal
 from aegis_core.actuation.signature import AEGIS_SIGNATURE
 from aegis_core.perception.display import DisplayLayout, OffScreenError, Point, verify_layout
 
@@ -81,7 +91,16 @@ __all__ = [
     "MouseButton",
     "ReleaseFailedError",
     "SendInputBackend",
+    "WalledOffError",
 ]
+
+log = logging.getLogger(__name__)
+
+#: A focus change passes through "no window has focus" for an instant; only this
+#: long without one counts as a secure desktop or the lock screen.
+NO_FOREGROUND_GRACE_S = 0.25
+#: How often owed releases are retried while the foreground still outranks us.
+OWED_POLL_S = 0.02
 
 
 class MouseButton(StrEnum):
@@ -101,6 +120,23 @@ class InputAbortedError(RuntimeError):
         super().__init__("aborted: the user took over")
         self.released: tuple[int, ...] = tuple(released)
         self.released_buttons: tuple[MouseButton, ...] = tuple(buttons)
+
+
+class WalledOffError(InputAbortedError):
+    """A window that outranks us has focus, so nothing we send would land.
+
+    An `InputAbortedError`, because what follows is the same: everything held is
+    released (or owed) and the task pauses. `blocker` says which window.
+    """
+
+    def __init__(
+        self, blocker: Blocker, released: Sequence[int] = (), buttons: Sequence[MouseButton] = ()
+    ) -> None:
+        super().__init__(released, buttons)
+        self.blocker = blocker
+        self.args = (
+            f"stopped: {blocker.describe()} has focus, and Windows drops input sent to it",
+        )
 
 
 class ReleaseFailedError(RuntimeError):
@@ -128,6 +164,16 @@ class InputBackend(Protocol):
     def mouse_button(self, button: MouseButton, *, down: bool) -> None: ...
 
     def scroll(self, dx: int, dy: int) -> None: ...
+
+    def blocker(self) -> Blocker | None:
+        """What would stop our events landing right now, or `None` if they can."""
+        ...
+
+    def key_is_down(self, vk: int) -> bool:
+        """Whether Windows has `vk` down. Meaningful only while `blocker()` is `None`."""
+        ...
+
+    def button_is_down(self, button: MouseButton) -> bool: ...
 
 
 class SendInputBackend:
@@ -221,6 +267,28 @@ class SendInputBackend:
             )
         win32.send_input(events)
 
+    def blocker(self) -> Blocker | None:
+        return foreground_blocker()
+
+    def key_is_down(self, vk: int) -> bool:
+        return win32.key_is_down(vk)
+
+    def button_is_down(self, button: MouseButton) -> bool:
+        """Either physical button that could be carrying `button`.
+
+        `GetAsyncKeyState` reports physical buttons; with the buttons swapped, which
+        one our press went to is Windows' business, so both are asked. Saying "down"
+        once too often costs one stray button-up; saying "up" wrongly strands a drag.
+        """
+        vks = {
+            MouseButton.LEFT: {win32.VK_LBUTTON},
+            MouseButton.RIGHT: {win32.VK_RBUTTON},
+            MouseButton.MIDDLE: {win32.VK_MBUTTON},
+        }[button]
+        if button is not MouseButton.MIDDLE and win32.buttons_swapped():
+            vks = {win32.VK_LBUTTON, win32.VK_RBUTTON}
+        return any(win32.key_is_down(vk) for vk in vks)
+
 
 # ---------------------------------------------------------------------------
 # Controller
@@ -255,6 +323,10 @@ class InputController:
         self._lock = threading.RLock()
         self._held_keys: list[int] = []
         self._held_buttons: list[MouseButton] = []
+        #: Released while walled off, so probably still down: see `_owe()`.
+        self._owed_keys: set[int] = set()
+        self._owed_buttons: set[MouseButton] = set()
+        self._owed_thread: threading.Thread | None = None
         self._kill = kill
         self._layout_check = layout_check
         #: `None` moves in one jump; the agent passes `motion.HUMAN`.
@@ -280,6 +352,12 @@ class InputController:
     def held_modifiers(self) -> tuple[int, ...]:
         return tuple(vk for vk in self.held_keys if vk in MODIFIER_VKS)
 
+    @property
+    def owed(self) -> tuple[frozenset[int], frozenset[MouseButton]]:
+        """Keys and buttons whose release Windows may have dropped, not yet re-sent."""
+        with self._lock:
+            return frozenset(self._owed_keys), frozenset(self._owed_buttons)
+
     # -- abort plumbing -----------------------------------------------------
 
     def _checkpoint(self) -> None:
@@ -291,6 +369,28 @@ class InputController:
             raise InputAbortedError()
         if self._kill is not None and self._kill.engaged:
             raise InputAbortedError()
+        self._check_wall()
+
+    def _check_wall(self) -> None:
+        """Raise `WalledOffError`, and pause the task, if our events cannot land."""
+        blocker = self._backend.blocker()
+        deadline = time.monotonic() + NO_FOREGROUND_GRACE_S
+        while blocker is not None and blocker.no_foreground and time.monotonic() < deadline:
+            time.sleep(0.01)
+            if self._preempt is not None and self._preempt.is_set():
+                raise InputAbortedError()
+            blocker = self._backend.blocker()
+        if blocker is None:
+            return
+        log.warning(
+            "input.walled_off",
+            extra={"image": blocker.image, "pid": blocker.pid, "integrity": blocker.integrity},
+        )
+        if self._preempt is not None:
+            # Behind this window the hooks cannot see the human either, so carrying
+            # on after it closes would be acting blind. Pause, like a takeover.
+            self._preempt.trigger(PreemptEvent("walled_off", 0, time.perf_counter()))
+        raise WalledOffError(blocker)
 
     def _pace(self) -> None:
         """Wait between events, but wake instantly on preemption."""
@@ -321,12 +421,18 @@ class InputController:
             # Inside the try: if the signal is already set, keys held from an
             # earlier call must still be released before we unwind.
             self._checkpoint()
+            # Settle any release still owed before this sequence presses anything,
+            # so the retry thread cannot let go of a key this sequence holds.
+            self.settle_owed()
             yield
             # The kill switch sweeps from another thread, so an event sent in
             # the gap between its sweep and this sequence's next checkpoint
             # would otherwise outlive it — `key_down()` has no next checkpoint.
             if self._kill is not None and self._kill.engaged:
                 raise InputAbortedError()
+            # Likewise a window that came forward after the last checkpoint: the
+            # final event may have been dropped, so the action did not happen.
+            self._check_wall()
         except BaseException as exc:
             released, buttons = self._release_all_unchecked()
             if isinstance(exc, InputAbortedError):
@@ -375,12 +481,87 @@ class InputController:
                     released.append(vk)
             self._held_keys.clear()
 
+            if released or released_buttons:
+                blocker = self._backend.blocker()
+                if blocker is not None:
+                    self._owe(blocker, released, released_buttons)
+
         if failures:
             raise ReleaseFailedError(
                 f"{len(failures)} key/button release(s) failed; "
                 f"released {released!r} and {released_buttons!r}"
             ) from failures[0]
         return tuple(released), tuple(released_buttons)
+
+    # -- owed releases ------------------------------------------------------
+
+    def _owe(self, blocker: Blocker, keys: Sequence[int], buttons: Sequence[MouseButton]) -> None:
+        """Record releases Windows probably dropped, and make sure something retries them.
+
+        Called with `_lock` held. Measured: a `KEYUP` sent while a window that
+        outranks us has focus is dropped, the key stays down, and `GetAsyncKeyState`
+        cannot show it until that window loses focus. A stuck Ctrl would then turn
+        the human's typing in that admin window into shortcuts (invariant 3).
+        """
+        self._owed_keys.update(keys)
+        self._owed_buttons.update(buttons)
+        log.warning(
+            "input.release_owed",
+            extra={"keys": len(keys), "buttons": len(buttons), "image": blocker.image},
+        )
+        if self._owed_thread is None or not self._owed_thread.is_alive():
+            self._owed_thread = threading.Thread(
+                target=self._retry_owed, name="aegis-owed-release", daemon=True
+            )
+            self._owed_thread.start()
+
+    def _retry_owed(self) -> None:
+        while not self.settle_owed():
+            time.sleep(OWED_POLL_S)
+
+    def settle_owed(self) -> bool:
+        """Re-send owed releases if our events can land now. True when nothing is owed.
+
+        Only what Windows still reports down is released, and nothing this
+        controller is holding again. Like `release_all()`, it never checkpoints.
+        """
+        with self._lock:
+            if not (self._owed_keys or self._owed_buttons):
+                return True
+            if self._backend.blocker() is not None:
+                return False
+            pending = [vk for vk in self._owed_keys if vk not in self._held_keys]
+            # Ordinary keys before modifiers, as in `release_all()`.
+            keys = [vk for vk in pending if vk not in MODIFIER_VKS]
+            keys += [vk for vk in pending if vk in MODIFIER_VKS]
+            buttons = [b for b in self._owed_buttons if b not in self._held_buttons]
+            sent_keys: list[int] = []
+            sent_buttons: list[MouseButton] = []
+            try:
+                for button in buttons:
+                    if self._backend.button_is_down(button):
+                        self._backend.mouse_button(button, down=False)
+                    sent_buttons.append(button)
+                for vk in keys:
+                    if self._backend.key_is_down(vk):
+                        self._backend.key(vk, down=False)
+                    sent_keys.append(vk)
+            except Exception:  # retried next round, like any dropped release
+                log.exception("input.owed_release_failed")
+            # Focus may have moved again while we sent: then this round proves nothing.
+            if self._backend.blocker() is not None:
+                return False
+            self._owed_keys.difference_update(sent_keys)
+            self._owed_buttons.difference_update(sent_buttons)
+            if sent_keys or sent_buttons:
+                log.info(
+                    "input.owed_released",
+                    extra={"keys": len(sent_keys), "buttons": len(sent_buttons)},
+                )
+            # A key this controller holds again is a hold now, not a debt.
+            self._owed_keys.difference_update(self._held_keys)
+            self._owed_buttons.difference_update(self._held_buttons)
+            return not (self._owed_keys or self._owed_buttons)
 
     # -- primitives ---------------------------------------------------------
 

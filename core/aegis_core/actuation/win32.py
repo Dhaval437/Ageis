@@ -70,6 +70,16 @@ WM_SYSKEYDOWN: Final = 0x0104
 WM_SYSKEYUP: Final = 0x0105
 WM_MOUSEMOVE: Final = 0x0200
 
+#: `OpenProcess` / `OpenProcessToken` rights, and `TOKEN_INFORMATION_CLASS.TokenIntegrityLevel`.
+PROCESS_QUERY_LIMITED_INFORMATION: Final = 0x1000
+TOKEN_QUERY: Final = 0x0008
+TOKEN_INTEGRITY_LEVEL: Final = 25
+
+VK_LBUTTON: Final = 0x01
+VK_RBUTTON: Final = 0x02
+VK_MBUTTON: Final = 0x04
+SM_SWAPBUTTON: Final = 23
+
 # ---------------------------------------------------------------------------
 # Structures — field names are Win32's, not ours (see the N815 exemption in
 # pyproject.toml). Renaming them would silently break the ABI mapping.
@@ -139,6 +149,7 @@ class MSLLHOOKSTRUCT(ctypes.Structure):
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
 
 user32.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
 user32.SendInput.restype = wintypes.UINT
@@ -179,6 +190,54 @@ user32.VkKeyScanW.restype = ctypes.c_short
 
 kernel32.GetCurrentThreadId.argtypes = ()
 kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+
+user32.GetForegroundWindow.argtypes = ()
+user32.GetForegroundWindow.restype = wintypes.HWND
+
+user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+
+user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
+user32.GetAsyncKeyState.restype = ctypes.c_short
+
+user32.GetSystemMetrics.argtypes = (ctypes.c_int,)
+user32.GetSystemMetrics.restype = ctypes.c_int
+
+kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+kernel32.OpenProcess.restype = wintypes.HANDLE
+
+kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+kernel32.CloseHandle.restype = wintypes.BOOL
+
+kernel32.QueryFullProcessImageNameW.argtypes = (
+    wintypes.HANDLE,
+    wintypes.DWORD,
+    wintypes.LPWSTR,
+    ctypes.POINTER(wintypes.DWORD),
+)
+kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+
+advapi32.OpenProcessToken.argtypes = (
+    wintypes.HANDLE,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.HANDLE),
+)
+advapi32.OpenProcessToken.restype = wintypes.BOOL
+
+advapi32.GetTokenInformation.argtypes = (
+    wintypes.HANDLE,
+    ctypes.c_int,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+)
+advapi32.GetTokenInformation.restype = wintypes.BOOL
+
+advapi32.GetSidSubAuthorityCount.argtypes = (ctypes.c_void_p,)
+advapi32.GetSidSubAuthorityCount.restype = ctypes.POINTER(ctypes.c_ubyte)
+
+advapi32.GetSidSubAuthority.argtypes = (ctypes.c_void_p, wintypes.DWORD)
+advapi32.GetSidSubAuthority.restype = ctypes.POINTER(wintypes.DWORD)
 
 
 # ---------------------------------------------------------------------------
@@ -240,3 +299,75 @@ def current_thread_id() -> int:
 def post_quit(thread_id: int) -> bool:
     """Ask the message loop on `thread_id` to exit. False if the thread is gone."""
     return bool(user32.PostThreadMessageW(thread_id, WM_QUIT, 0, 0))
+
+
+def foreground_pid() -> int | None:
+    """The process that owns the foreground window, or `None` when no window has it.
+
+    `None` is what a secure desktop (a UAC prompt), the lock screen, or the instant
+    between one window losing focus and the next gaining it all look like.
+    """
+    window = user32.GetForegroundWindow()
+    if not window:
+        return None
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
+    return int(pid.value) or None
+
+
+def process_integrity(pid: int) -> int | None:
+    """The integrity RID of `pid`'s token (`0x2000` medium, `0x3000` high), or `None`.
+
+    `None` when we may not read it — which a medium process gets for an elevated one.
+    """
+    process = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not process:
+        return None
+    token = wintypes.HANDLE()
+    try:
+        if not advapi32.OpenProcessToken(process, TOKEN_QUERY, ctypes.byref(token)):
+            return None
+        try:
+            buffer = ctypes.create_string_buffer(64)
+            size = wintypes.DWORD()
+            if not advapi32.GetTokenInformation(
+                token, TOKEN_INTEGRITY_LEVEL, buffer, len(buffer), ctypes.byref(size)
+            ):
+                return None
+            # TOKEN_MANDATORY_LABEL starts with SID_AND_ATTRIBUTES, whose first field is the SID.
+            sid = ctypes.c_void_p.from_buffer(buffer).value
+            count = advapi32.GetSidSubAuthorityCount(sid).contents.value
+            return int(advapi32.GetSidSubAuthority(sid, count - 1).contents.value)
+        finally:
+            kernel32.CloseHandle(token)
+    finally:
+        kernel32.CloseHandle(process)
+
+
+def process_image_name(pid: int) -> str | None:
+    """The file name of `pid`'s executable (`Taskmgr.exe`), without its folder, or `None`."""
+    process = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not process:
+        return None
+    try:
+        buffer = ctypes.create_unicode_buffer(1024)
+        size = wintypes.DWORD(len(buffer))
+        if not kernel32.QueryFullProcessImageNameW(process, 0, buffer, ctypes.byref(size)):
+            return None
+        return buffer.value.rsplit("\\", 1)[-1] or None
+    finally:
+        kernel32.CloseHandle(process)
+
+
+def key_is_down(vk: int) -> bool:
+    """`GetAsyncKeyState(vk)`'s "down" bit.
+
+    Reads as up for every key while a window of higher integrity has focus, so it
+    says nothing at those times (measured for `P3-20`).
+    """
+    return bool(user32.GetAsyncKeyState(vk) & 0x8000)
+
+
+def buttons_swapped() -> bool:
+    """Whether the user swapped the primary and secondary mouse buttons."""
+    return bool(user32.GetSystemMetrics(SM_SWAPBUTTON))

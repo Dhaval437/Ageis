@@ -34,7 +34,7 @@ from aegis_core.perception.display import (
     Point,
 )
 
-from tests.actuation.helpers import RecordingBackend
+from tests.actuation.helpers import RecordingBackend, skip_if_walled_off
 from tests.perception.test_display import MIXED, PRIMARY
 
 VK_OEM_2 = 0xBF  # `/?` on a US layout
@@ -275,6 +275,7 @@ def test_move_to_lands_on_every_probe_point_of_the_live_desk() -> None:
     start = _cursor()
     if start is None:
         pytest.skip("no interactive desktop: GetCursorPos is refused")
+    skip_if_walled_off()  # the controller would refuse, rightly (P3-20)
     layout = query_layout()
     ctrl = InputController(SendInputBackend(), inter_event_delay=0)
     misses: list[tuple[Point, Point | None]] = []

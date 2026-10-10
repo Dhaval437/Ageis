@@ -117,7 +117,11 @@ def signal() -> Iterator[PreemptSignal]:
     anything. A monitor that also watched the mouse would happily be set off by
     the developer's cursor a moment before the injection, and the number this
     test prints would be nonsense. `test_hooks.py` covers the mouse path.
+
+    Every test here takes over with a real keystroke, which UIPI withholds from
+    the hook while a window of higher integrity has focus (`P3-20`): skip then.
     """
+    skip_if_walled_off()
     signal = PreemptSignal()
     with InputMonitor(signal, watch_mouse=False):
         yield signal
@@ -245,7 +249,6 @@ def test_real_modifiers_held_in_windows_are_up_after_a_real_preemption(
     signal: PreemptSignal,
 ) -> None:
     """Invariant 3 checked by Windows, not by our own bookkeeping, inside the budget."""
-    skip_if_walled_off()
     if any(os_says_down(vk) for vk in (*LIVE_HELD, VK_F22)):
         pytest.skip("a key under test is already held on this machine")
 

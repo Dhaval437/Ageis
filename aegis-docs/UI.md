@@ -234,6 +234,7 @@ The behaviour from `ARCHITECTURE.md § 8.3`, expressed in UI:
    - **Stop**.
 4. No countdown, no auto-resume. The agent waits indefinitely. The human decides when it goes again.
 5. If the user types into the composer in the main window while a task runs, that is *also* preemption — the message becomes a mid-run instruction and the agent pauses to read it.
+6. If a window running as administrator comes to the front, Aegis pauses the same way (`ARCHITECTURE.md § 8.3`, P3-20): it can neither control that window nor notice the human using it. The HUD says **"An administrator window is in front — Aegis paused."** and, under it, *"Aegis can't see or control windows running as administrator. Switch away from it, then Resume."* Same buttons, same rule: no auto-resume when the window goes away. (Wiring: `P3-24`.)
 
 **Kill switch feedback:** on hotkey, a full-screen 400 ms red edge-flash, all input released, HUD collapses to `■ Stopped by you`, and the main window comes forward showing the last five actions with an **Undo last N** button. The user must be able to see, in one glance, what the agent had just done.
 

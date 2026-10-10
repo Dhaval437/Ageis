@@ -538,6 +538,9 @@ def test_an_absolute_move_lands_on_exactly_the_pixel_asked_for(
     the run is indistinguishable from a wrong mapping on a single sample; a
     wrong mapping misses every time.
     """
+    from tests.actuation.helpers import skip_if_walled_off
+
+    skip_if_walled_off()  # UIPI drops the move and GetCursorPos shows no change (P3-20)
     misses: list[tuple[Point, Point | None]] = []
     for point in _probe_points(live_layout):
         for _attempt in range(2):

@@ -457,39 +457,3 @@ def test_a_miss_that_is_ours_fails_with_its_cause(
     monkeypatch.setattr(helpers, "LATE_S", 0.01)
     with pytest.raises(pytest.fail.Exception, match="within 10 ms: the hook thread is dead"):
         helpers.expect_preempted(signal, _Stub(running=False), time.perf_counter(), 0.01)
-
-
-def test_our_own_integrity_is_readable_and_ordinary() -> None:
-    """The comparison rests on reading a token; ours must read as medium or high."""
-    import os
-
-    level = helpers.process_integrity(os.getpid())
-    assert level in (helpers.MEDIUM_INTEGRITY, helpers.HIGH_INTEGRITY)
-
-
-def test_a_process_that_does_not_exist_has_no_integrity() -> None:
-    assert helpers.process_integrity(0xFFFFFFF0) is None
-
-
-@pytest.mark.parametrize(
-    ("theirs", "walled_off"),
-    [
-        (helpers.MEDIUM_INTEGRITY, False),
-        (helpers.MEDIUM_INTEGRITY - 0x1000, False),
-        (helpers.HIGH_INTEGRITY, True),
-        (None, True),
-    ],
-    ids=["same", "lower", "higher", "unreadable"],
-)
-def test_only_a_window_that_outranks_us_is_walled_off(
-    monkeypatch: pytest.MonkeyPatch, theirs: int | None, walled_off: bool
-) -> None:
-    import os
-
-    ours = os.getpid()
-    monkeypatch.setattr(
-        helpers,
-        "process_integrity",
-        lambda pid: helpers.MEDIUM_INTEGRITY if pid == ours else theirs,
-    )
-    assert (helpers.foreground_outranks_us() is not None) == walled_off

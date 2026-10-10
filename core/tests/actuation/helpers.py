@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from aegis_core.actuation.input import MouseButton
+from aegis_core.actuation.integrity import Blocker, foreground_blocker
 from aegis_core.actuation.preempt import PreemptSignal
 
 #: F24. Chosen for the "physical input" injections because no shell, editor, or
@@ -39,11 +40,26 @@ class RecordingBackend:
         self.events: list[Recorded] = []
         self.delay = delay
         self.fail_keys = fail_keys
+        #: Set to stand a window that outranks us in front (`P3-20`): events are
+        #: still recorded — they were *sent* — but, as Windows does, they change
+        #: nothing, and every key reads as up.
+        self.blocked: Blocker | None = None
+        #: Called with each event after it is recorded, to move focus mid-sequence.
+        self.on_event: Callable[[Recorded], None] | None = None
+        #: What "Windows" has down: keys and buttons whose press landed.
+        self.down: set[object] = set()
         self._lock = threading.Lock()
 
     def _record(self, event: Recorded) -> None:
         with self._lock:
             self.events.append(event)
+            if self.blocked is None and event.down is not None:
+                if event.down:
+                    self.down.add(event.detail)
+                else:
+                    self.down.discard(event.detail)
+        if self.on_event is not None:
+            self.on_event(event)
         if self.delay:
             time.sleep(self.delay)
 
@@ -68,6 +84,17 @@ class RecordingBackend:
 
     def scroll(self, dx: int, dy: int) -> None:
         self._record(Recorded("scroll", (dx, dy)))
+
+    def blocker(self) -> Blocker | None:
+        return self.blocked
+
+    def key_is_down(self, vk: int) -> bool:
+        with self._lock:
+            return self.blocked is None and vk in self.down
+
+    def button_is_down(self, button: MouseButton) -> bool:
+        with self._lock:
+            return self.blocked is None and button in self.down
 
     # -- assertions ---------------------------------------------------------
 
@@ -115,97 +142,13 @@ def inject_untagged_key(vk: int = VK_F24) -> None:
     win32.send_input(events)
 
 
-#: Integrity-level RIDs (`winnt.h`). UIPI compares these.
-MEDIUM_INTEGRITY = 0x2000
-HIGH_INTEGRITY = 0x3000
-
-
-def process_integrity(pid: int) -> int | None:
-    """The integrity RID of `pid`'s token, or `None` if we may not read it."""
-    if sys.platform != "win32":  # pragma: no cover - guarded by the module skip
-        raise RuntimeError("Windows only")
-    import ctypes
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
-    advapi32.OpenProcessToken.argtypes = (
-        wintypes.HANDLE,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.HANDLE),
-    )
-    advapi32.GetTokenInformation.argtypes = (
-        wintypes.HANDLE,
-        ctypes.c_int,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.DWORD),
-    )
-    advapi32.GetSidSubAuthorityCount.argtypes = (ctypes.c_void_p,)
-    advapi32.GetSidSubAuthorityCount.restype = ctypes.POINTER(ctypes.c_ubyte)
-    advapi32.GetSidSubAuthority.argtypes = (ctypes.c_void_p, wintypes.DWORD)
-    advapi32.GetSidSubAuthority.restype = ctypes.POINTER(wintypes.DWORD)
-
-    process_query_limited_information, token_query, token_integrity_level = 0x1000, 0x0008, 25
-    process = kernel32.OpenProcess(process_query_limited_information, False, pid)
-    if not process:
-        return None
-    token = wintypes.HANDLE()
-    try:
-        if not advapi32.OpenProcessToken(process, token_query, ctypes.byref(token)):
-            return None
-        try:
-            buffer = ctypes.create_string_buffer(64)
-            size = wintypes.DWORD()
-            if not advapi32.GetTokenInformation(
-                token, token_integrity_level, buffer, len(buffer), ctypes.byref(size)
-            ):
-                return None
-            # TOKEN_MANDATORY_LABEL starts with SID_AND_ATTRIBUTES, whose first field is the SID.
-            sid = ctypes.c_void_p.from_buffer(buffer).value
-            count = advapi32.GetSidSubAuthorityCount(sid).contents.value
-            return int(advapi32.GetSidSubAuthority(sid, count - 1).contents.value)
-        finally:
-            kernel32.CloseHandle(token)
-    finally:
-        kernel32.CloseHandle(process)
-
-
 def foreground_outranks_us() -> str | None:
     """Describe the focused window if UIPI walls it off from us, else `None`.
 
-    While a window of a higher integrity level than ours has focus (Task Manager,
-    an elevated terminal, a UAC prompt), Windows drops the keystrokes we inject and
-    does not call our low-level hook for them: measured, 0 of 5 reached the hook
-    with Task Manager in front, 5 of 5 without. A process whose token we may not
-    read at all is treated the same, since that is itself a sign it outranks us.
+    The product's own check (`actuation/integrity.py`, `P3-20`), worded for a skip.
     """
-    if sys.platform != "win32":  # pragma: no cover - guarded by the module skip
-        raise RuntimeError("Windows only")
-    import ctypes
-    import os
-    from ctypes import wintypes
-
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    user32.GetForegroundWindow.restype = wintypes.HWND
-    user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
-    user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
-
-    window = user32.GetForegroundWindow()
-    if not window:
-        return None
-    pid = wintypes.DWORD()
-    user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
-    ours, theirs = process_integrity(os.getpid()), process_integrity(pid.value)
-    if ours is not None and theirs is not None and theirs <= ours:
-        return None
-    title = ctypes.create_unicode_buffer(256)
-    user32.GetWindowTextW(window, title, len(title))
-    level = "unreadable" if theirs is None else f"{theirs:#06x}"
-    return f"{title.value!r} (pid {pid.value}, integrity {level}; ours {ours:#06x})"
+    blocker = foreground_blocker()
+    return None if blocker is None else blocker.describe()
 
 
 #: How long a missed keystroke may still turn up before we call it lost rather than late.

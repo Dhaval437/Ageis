@@ -23,7 +23,7 @@ from aegis_core.actuation.motion import (
 from aegis_core.actuation.preempt import PreemptEvent, PreemptSignal
 from aegis_core.perception.display import OffScreenError, Point
 
-from tests.actuation.helpers import RecordingBackend
+from tests.actuation.helpers import RecordingBackend, skip_if_walled_off
 from tests.perception.test_display import MIXED
 
 
@@ -264,6 +264,7 @@ def test_a_human_move_on_the_live_desk_lands_exactly_and_in_time() -> None:
     start = _cursor()
     if start is None:
         pytest.skip("no interactive desktop: GetCursorPos is refused")
+    skip_if_walled_off()  # the controller would refuse, rightly (P3-20)
     layout = query_layout()
     primary = layout.primary.bounds
     targets = [

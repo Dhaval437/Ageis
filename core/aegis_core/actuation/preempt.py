@@ -34,7 +34,9 @@ from aegis_core.actuation.signature import AEGIS_SIGNATURE
 
 log = logging.getLogger(__name__)
 
-PreemptSource = Literal["mouse", "keyboard"]
+#: `walled_off` is not the hook: `InputController` found a window that outranks us
+#: in front (`integrity.py`), behind which the hooks cannot see the human at all.
+PreemptSource = Literal["mouse", "keyboard", "walled_off"]
 
 #: How long `start()` waits for the hook thread to install its hooks.
 _START_TIMEOUT_S = 5.0
