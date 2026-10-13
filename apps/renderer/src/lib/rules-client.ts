@@ -1,4 +1,10 @@
-import type { AegisBridge, AllowRuleInfo, BridgeResult, CoreResponse } from '@aegis/shared';
+import type {
+  AegisBridge,
+  AllowRuleInfo,
+  AskRuleInfo,
+  BridgeResult,
+  CoreResponse,
+} from '@aegis/shared';
 import { coreDetail } from '@/lib/models-api';
 import { parseRuleList } from '@/lib/rules-api';
 import { useRulesStore, type RulesState } from '@/stores/rules';
@@ -25,7 +31,12 @@ function set(patch: Partial<RulesState>): void {
 }
 
 type Outcome =
-  | { readonly ok: true; readonly rules: AllowRuleInfo[] }
+  | {
+      readonly ok: true;
+      readonly rules: AllowRuleInfo[];
+      readonly alwaysAsk: AskRuleInfo[];
+      readonly never: string[];
+    }
   | { readonly ok: false; readonly text: string; readonly status?: number };
 
 async function ask(
@@ -46,8 +57,8 @@ async function ask(
   if (status < 200 || status >= 300) {
     return { ok: false, text: coreDetail(status, body) ?? fallback, status };
   }
-  const rules = parseRuleList(body);
-  return rules === null ? { ok: false, text: UNREADABLE } : { ok: true, rules };
+  const dashboard = parseRuleList(body);
+  return dashboard === null ? { ok: false, text: UNREADABLE } : { ok: true, ...dashboard };
 }
 
 export async function loadRules(b: Bridge | undefined = bridge()): Promise<void> {
@@ -58,7 +69,13 @@ export async function loadRules(b: Bridge | undefined = bridge()): Promise<void>
     set({ status: 'error', loadError: outcome.text });
     return;
   }
-  set({ status: 'ready', rules: outcome.rules, loadError: null });
+  set({
+    status: 'ready',
+    rules: outcome.rules,
+    alwaysAsk: outcome.alwaysAsk,
+    never: outcome.never,
+    loadError: null,
+  });
 }
 
 /**
@@ -80,6 +97,8 @@ export async function revokeRule(
     set({
       status: 'ready',
       rules: outcome.rules,
+      alwaysAsk: outcome.alwaysAsk,
+      never: outcome.never,
       revoking: null,
       notice: { tone: 'info', text: `Revoked. Aegis will ask before using ${rule.tool} again.` },
     });
@@ -91,4 +110,48 @@ export async function revokeRule(
     return;
   }
   set({ revoking: null, notice: { tone: 'error', text: outcome.text } });
+}
+
+export async function addAskRule(tool: string, b: Bridge | undefined = bridge()): Promise<void> {
+  if (b === undefined) return;
+  set({ changingAsk: tool, notice: null });
+  const outcome = await ask(
+    b,
+    { method: 'POST', path: '/rules/always-ask', body: { tool } },
+    'Aegis could not save that rule. Try again.',
+  );
+  if (!outcome.ok) {
+    set({ changingAsk: null, notice: { tone: 'error', text: outcome.text } });
+    return;
+  }
+  set({
+    status: 'ready',
+    rules: outcome.rules,
+    alwaysAsk: outcome.alwaysAsk,
+    never: outcome.never,
+    changingAsk: null,
+    notice: { tone: 'info', text: `Aegis will always ask before using ${tool}.` },
+  });
+}
+
+export async function removeAskRule(tool: string, b: Bridge | undefined = bridge()): Promise<void> {
+  if (b === undefined) return;
+  set({ changingAsk: tool, notice: null });
+  const outcome = await ask(
+    b,
+    { method: 'DELETE', path: `/rules/always-ask/${encodeURIComponent(tool)}` },
+    'Aegis could not remove that rule. It will keep asking. Try again.',
+  );
+  if (!outcome.ok) {
+    set({ changingAsk: null, notice: { tone: 'error', text: outcome.text } });
+    return;
+  }
+  set({
+    status: 'ready',
+    rules: outcome.rules,
+    alwaysAsk: outcome.alwaysAsk,
+    never: outcome.never,
+    changingAsk: null,
+    notice: { tone: 'info', text: `${tool} now follows your autonomy setting.` },
+  });
 }

@@ -16,6 +16,7 @@ import { EngineUnavailable } from '@/components/EngineUnavailable';
 import { KillSwitchBar } from '@/components/KillSwitchBar';
 import { ModelsScreen } from '@/components/models/ModelsScreen';
 import { AlwaysAllowRules } from '@/components/AlwaysAllowRules';
+import { RulePreferences } from '@/components/RulePreferences';
 import { ScopeManager } from '@/components/ScopeManager';
 import { ScopePicker } from '@/components/ScopePicker';
 import { Button } from '@/components/ui/button';
@@ -104,6 +105,9 @@ export function AppShell(): ReactElement {
               <div className="flex w-full flex-col overflow-y-auto">
                 <div className="shrink-0">
                   <AlwaysAllowRules />
+                </div>
+                <div className="shrink-0">
+                  <RulePreferences />
                 </div>
                 <div className="shrink-0">
                   <ScopeManager />

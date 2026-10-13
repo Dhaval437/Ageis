@@ -128,6 +128,9 @@ function RuleRow({
           </p>
         )}
         <p className="text-xs text-text-dim">Made {formatCreated(rule.created_at)}</p>
+        <p className="text-xs text-text-dim">
+          Used {rule.use_count} {rule.use_count === 1 ? 'time' : 'times'}
+        </p>
       </div>
       <Button
         size="sm"

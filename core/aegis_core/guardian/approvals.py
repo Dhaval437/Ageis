@@ -141,6 +141,16 @@ class ApprovalBroker:
         loaded = (AllowRule.from_stored(stored) for stored in self._rules.list())
         return tuple(rule for rule in loaded if rule is not None)
 
+    def ask_tools(self) -> frozenset[str]:
+        """Tool names the person chose to always approve first (`P3-21`)."""
+        if self._rules is None:
+            return frozenset()
+        return frozenset(rule.tool for rule in self._rules.list_ask())
+
+    def record_rule_use(self, rule_id: int) -> bool:
+        """Count a matched rule after the agent loop commits to executing the call."""
+        return self._rules is not None and self._rules.record_use(rule_id)
+
     async def request(
         self,
         tool: GuardedTool,

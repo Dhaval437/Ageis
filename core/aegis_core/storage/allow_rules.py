@@ -17,7 +17,7 @@ from aegis_core.storage.db import StorageError, connect, default_db_path
 from aegis_core.storage.usage import utc_timestamp
 
 _LIST: Final = (
-    "SELECT id, kind, tool, folder, params_digest, task_id, created_at"
+    "SELECT id, kind, tool, folder, params_digest, task_id, created_at, use_count"
     " FROM allow_rules ORDER BY id DESC"
 )
 _INSERT: Final = """
@@ -25,6 +25,10 @@ INSERT INTO allow_rules (kind, tool, folder, params_digest, task_id, created_at)
 VALUES (?, ?, ?, ?, ?, ?)
 """
 _DELETE: Final = "DELETE FROM allow_rules WHERE id = ?"
+_USE: Final = "UPDATE allow_rules SET use_count = use_count + 1 WHERE id = ?"
+_ASK_LIST: Final = "SELECT tool, created_at FROM ask_rules ORDER BY tool COLLATE NOCASE"
+_ASK_ADD: Final = "INSERT INTO ask_rules (tool, created_at) VALUES (?, ?)"
+_ASK_DELETE: Final = "DELETE FROM ask_rules WHERE tool = ?"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +39,13 @@ class StoredRule:
     folder: str | None
     params_digest: str | None
     task_id: str | None
+    created_at: str
+    use_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class StoredAskRule:
+    tool: str
     created_at: str
 
 
@@ -96,7 +107,7 @@ class AllowRuleStore:
                 raise StorageError(f"cannot save the always-allow rule: {error}") from error
         if cursor.lastrowid is None:
             raise StorageError("the always-allow rule was not saved")
-        return StoredRule(cursor.lastrowid, kind, tool, folder, params_digest, task_id, now)
+        return StoredRule(cursor.lastrowid, kind, tool, folder, params_digest, task_id, now, 0)
 
     def delete(self, rule_id: int) -> bool:
         with self._lock:
@@ -105,6 +116,44 @@ class AllowRuleStore:
                 cursor = self._conn.execute(_DELETE, (rule_id,))
             except sqlite3.Error as error:
                 raise StorageError(f"cannot remove rule {rule_id}: {error}") from error
+        return cursor.rowcount > 0
+
+    def record_use(self, rule_id: int) -> bool:
+        """Increment a rule after the loop acts on the matching Guardian verdict."""
+        with self._lock:
+            self._require_open()
+            try:
+                cursor = self._conn.execute(_USE, (rule_id,))
+            except sqlite3.Error as error:
+                raise StorageError(f"cannot count rule {rule_id}: {error}") from error
+        return cursor.rowcount > 0
+
+    def list_ask(self) -> tuple[StoredAskRule, ...]:
+        with self._lock:
+            self._require_open()
+            try:
+                rows = self._conn.execute(_ASK_LIST).fetchall()
+            except sqlite3.Error as error:
+                raise StorageError(f"cannot read always-ask rules: {error}") from error
+        return tuple(StoredAskRule(*row) for row in rows)
+
+    def add_ask(self, tool: str) -> StoredAskRule:
+        now = utc_timestamp()
+        with self._lock:
+            self._require_open()
+            try:
+                self._conn.execute(_ASK_ADD, (tool, now))
+            except sqlite3.Error as error:
+                raise StorageError(f"cannot save the always-ask rule: {error}") from error
+        return StoredAskRule(tool, now)
+
+    def delete_ask(self, tool: str) -> bool:
+        with self._lock:
+            self._require_open()
+            try:
+                cursor = self._conn.execute(_ASK_DELETE, (tool,))
+            except sqlite3.Error as error:
+                raise StorageError(f"cannot remove the always-ask rule: {error}") from error
         return cursor.rowcount > 0
 
     def _require_open(self) -> None:

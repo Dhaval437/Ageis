@@ -79,6 +79,7 @@ def create_app(
     kill_switch: KillSwitch | None = None,
     approvals: ApprovalBroker | None = None,
     scopes: ScopeBook | None = None,
+    never_rules: tuple[str, ...] = (),
 ) -> FastAPI:
     """Build the core's HTTP app, authenticated against this session's token.
 
@@ -116,6 +117,7 @@ def create_app(
     app.state.models = models
     app.state.auth = auth
     app.state.scopes = scopes
+    app.state.never_rules = never_rules
     app.state.kill_switch = kill_switch if kill_switch is not None else KillSwitch()
     hub_ = app.state.hub
     app.state.approvals = (

@@ -24,6 +24,7 @@ from aegis_core.guardian.approvals import (
     ApprovalNotFoundError,
     Resolution,
 )
+from aegis_core.guardian.rules import load_rules
 from aegis_core.server.app import create_app
 from aegis_core.server.auth import GRANT_HEADER, grant_signature
 from aegis_core.storage.allow_rules import AllowRuleStore
@@ -253,9 +254,54 @@ def test_rules_are_listed_and_revoked(store: AllowRuleStore) -> None:
         assert client.delete(f"/v1/rules/{gone.id}", headers=AUTHORIZED).status_code == 404
 
 
+def test_rule_dashboard_counts_uses_and_manages_always_ask(store: AllowRuleStore) -> None:
+    rule = store.add("exact", "fs.read_file", params_digest="0" * 64)
+    assert store.record_use(rule.id)
+    broker = FakeBroker(rule_store=store)
+    with client_with(broker) as client:
+        added = client.post("/v1/rules/always-ask", headers=AUTHORIZED, json={"tool": "fs.write"})
+        assert added.status_code == 200
+        body = added.json()
+        assert body["rules"][0]["use_count"] == 1
+        assert body["always_ask"][0]["tool"] == "fs.write"
+        duplicate = client.post(
+            "/v1/rules/always-ask", headers=AUTHORIZED, json={"tool": "fs.write"}
+        )
+        assert duplicate.status_code == 409
+        removed = client.delete("/v1/rules/always-ask/fs.write", headers=AUTHORIZED)
+        assert removed.status_code == 200
+        assert removed.json()["always_ask"] == []
+        assert client.delete("/v1/rules/always-ask/fs.write", headers=AUTHORIZED).status_code == 404
+
+
+def test_never_list_exposes_sentences_but_not_compiled_patterns(store: AllowRuleStore) -> None:
+    broker = FakeBroker(rule_store=store)
+    labels = tuple(entry.reason for entry in load_rules().forbidden)
+    app = create_app(make_auth(), approvals=broker, never_rules=labels)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        body = client.get("/v1/rules", headers=AUTHORIZED).json()
+    assert len(body["never"]) == 28
+    assert all(label.startswith("Aegis never ") for label in body["never"])
+    encoded = json.dumps(body)
+    assert "%WINDIR%" not in encoded
+    assert "patterns" not in encoded
+
+
+@pytest.mark.parametrize("tool", ["", "FS Write", "../fs.write", "x" * 129])
+def test_an_invalid_always_ask_tool_is_refused(store: AllowRuleStore, tool: str) -> None:
+    with client_with(FakeBroker(rule_store=store)) as client:
+        response = client.post("/v1/rules/always-ask", headers=AUTHORIZED, json={"tool": tool})
+    assert response.status_code == 422
+    assert store.list_ask() == ()
+
+
 def test_with_no_rule_store_there_are_no_rules() -> None:
     with client_with(FakeBroker()) as client:
-        assert client.get("/v1/rules", headers=AUTHORIZED).json() == {"rules": []}
+        assert client.get("/v1/rules", headers=AUTHORIZED).json() == {
+            "rules": [],
+            "always_ask": [],
+            "never": [],
+        }
         assert client.delete("/v1/rules/1", headers=AUTHORIZED).status_code == 404
 
 

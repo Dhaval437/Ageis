@@ -34,6 +34,7 @@ from fastapi import FastAPI
 
 from aegis_core import __version__
 from aegis_core.guardian.approvals import ApprovalBroker
+from aegis_core.guardian.dashboard import forbidden_labels
 from aegis_core.guardian.scope import ScopeBook, open_scope_book
 from aegis_core.logging_setup import configure_logging
 from aegis_core.models.service import ModelService
@@ -197,7 +198,14 @@ def main(
         models = _model_service(hub)
         approvals = _approval_broker(hub)
         scopes = open_scope_book()
-        app = create_app(auth, hub, models, approvals=approvals, scopes=scopes)
+        app = create_app(
+            auth,
+            hub,
+            models,
+            approvals=approvals,
+            scopes=scopes,
+            never_rules=forbidden_labels(),
+        )
 
         announce(
             Handshake(port=port, pid=os.getpid(), version=__version__),

@@ -375,6 +375,24 @@ class AllowRuleInfo(BaseModel):
     folder: str | None = Field(description="Canonical folder, for `tool_in_folder`.")
     task_id: str | None = Field(description="The task, for `tool_for_task`.")
     created_at: str
+    use_count: int = Field(ge=0)
+
+
+class AskRuleInfo(BaseModel):
+    """One tool the person chose to always approve first."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool: str
+    created_at: str
+
+
+class AskRuleCreate(BaseModel):
+    """Add a narrowing always-ask rule. A tool name grants no new access."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool: str = Field(min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9_.-]*$")
 
 
 class ScopeInfo(BaseModel):
@@ -429,8 +447,10 @@ class ScopeUpdate(BaseModel):
 
 
 class AllowRuleList(BaseModel):
-    """`GET /v1/rules`: every always-allow rule, newest first. Each is revocable."""
+    """`GET /v1/rules`: the complete Rules dashboard, with no FORBIDDEN patterns."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     rules: list[AllowRuleInfo]
+    always_ask: list[AskRuleInfo]
+    never: list[str] = Field(description="Reviewed FORBIDDEN sentences only; no patterns.")

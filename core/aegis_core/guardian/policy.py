@@ -47,7 +47,7 @@ Signal = Literal["echoes_observation", "high_rate", "novel_target", "sensitive_c
 """An anomaly the loop noticed about this call (`§ 8.1` step 5, `§ 8.6`). Any one of them
 raises the tier by one; `echoes_observation` also floors the decision at `confirm`."""
 
-Stage = Literal["forbidden", "unchecked", "scope", "tier", "rule"]
+Stage = Literal["forbidden", "unchecked", "scope", "tier", "rule", "ask_rule"]
 """Which step decided: the UI offers different things for a scope `deny` (widen the
 scope) than for a FORBIDDEN one (nothing)."""
 
@@ -83,6 +83,8 @@ class TaskContext:
     task_id: str | None = None
     #: The person's always-allow rules (`P3-11`). Consulted only as step 4 allows.
     allow_rules: tuple[AllowRule, ...] = ()
+    #: Tool names the person has escalated to always require approval (`P3-21`).
+    ask_tools: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,7 +197,19 @@ class Guardian:
         else:
             verdict = Verdict(decision, tier, "tier", _TIER_REASONS[decision], None, ctx.signals)
 
-        # 4. An always-allow rule relaxes a `confirm`, and only as far as `eligible()` says.
+        # 4. Always-ask is a narrowing rule. It can only turn an allow into confirm,
+        # and takes precedence over an older always-allow rule for the same tool.
+        if tool.name in ctx.ask_tools and verdict.decision == "allow":
+            return Verdict(
+                "confirm",
+                tier,
+                "ask_rule",
+                "You chose to always approve this tool first.",
+                None,
+                ctx.signals,
+            )
+
+        # 5. An always-allow rule relaxes a `confirm`, and only as far as `eligible()` says.
         if ctx.autonomy == "trusted" and ctx.allow_rules and eligible(verdict):
             for rule in ctx.allow_rules:
                 if rule.matches(tool.name, params, targets, ctx.task_id):

@@ -1,4 +1,4 @@
-import { RULE_KINDS, type AllowRuleInfo, type RuleKind } from '@aegis/shared';
+import { RULE_KINDS, type AllowRuleInfo, type AskRuleInfo, type RuleKind } from '@aegis/shared';
 
 /**
  * Runtime checks for what `GET /v1/rules` and `DELETE /v1/rules/{id}` answer (`P3-18`),
@@ -19,20 +19,55 @@ function stringOrNull(value: unknown): value is string | null {
 
 export function parseRule(value: unknown): AllowRuleInfo | null {
   if (!isRecord(value)) return null;
-  const { id, kind, tool, folder, task_id: taskId, created_at: createdAt } = value;
+  const {
+    id,
+    kind,
+    tool,
+    folder,
+    task_id: taskId,
+    created_at: createdAt,
+    use_count: useCount,
+  } = value;
   if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) return null;
   if (!isKind(kind) || typeof tool !== 'string' || typeof createdAt !== 'string') return null;
   if (!stringOrNull(folder) || !stringOrNull(taskId)) return null;
+  if (typeof useCount !== 'number' || !Number.isSafeInteger(useCount) || useCount < 0) return null;
   // The kind decides which field names the rule's reach; one without it is not a rule.
   if (kind === 'tool_in_folder' && (folder === null || folder === '')) return null;
   if (kind === 'tool_for_task' && (taskId === null || taskId === '')) return null;
-  return { id, kind, tool, folder, task_id: taskId, created_at: createdAt };
+  return { id, kind, tool, folder, task_id: taskId, created_at: createdAt, use_count: useCount };
 }
 
-export function parseRuleList(value: unknown): AllowRuleInfo[] | null {
-  if (!isRecord(value) || !Array.isArray(value['rules'])) return null;
+function parseAskRule(value: unknown): AskRuleInfo | null {
+  if (!isRecord(value)) return null;
+  const { tool, created_at: createdAt } = value;
+  return typeof tool === 'string' && typeof createdAt === 'string'
+    ? { tool, created_at: createdAt }
+    : null;
+}
+
+export interface RuleDashboard {
+  readonly rules: AllowRuleInfo[];
+  readonly alwaysAsk: AskRuleInfo[];
+  readonly never: string[];
+}
+
+export function parseRuleList(value: unknown): RuleDashboard | null {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value['rules']) ||
+    !Array.isArray(value['always_ask']) ||
+    !Array.isArray(value['never'])
+  )
+    return null;
   const rules = (value['rules'] as unknown[]).map(parseRule);
-  return rules.every((rule): rule is AllowRuleInfo => rule !== null) ? rules : null;
+  const alwaysAsk = (value['always_ask'] as unknown[]).map(parseAskRule);
+  const never = value['never'] as unknown[];
+  if (!rules.every((rule): rule is AllowRuleInfo => rule !== null)) return null;
+  if (!alwaysAsk.every((rule): rule is AskRuleInfo => rule !== null)) return null;
+  if (!never.every((label): label is string => typeof label === 'string' && label.length > 0))
+    return null;
+  return { rules, alwaysAsk, never };
 }
 
 /**

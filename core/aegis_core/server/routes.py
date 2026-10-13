@@ -53,6 +53,8 @@ from aegis_core.server.schemas import (
     AllowRuleList,
     ApprovalDecision,
     ApprovalResolved,
+    AskRuleCreate,
+    AskRuleInfo,
     HealthResponse,
     KeyRequest,
     KeyResponse,
@@ -178,12 +180,11 @@ async def answer_approval(
 
 @router.get("/rules", response_model=AllowRuleList)
 async def list_rules(request: Request) -> AllowRuleList:
-    """Every always-allow rule, for the Rules screen, where each can be revoked."""
+    """The Rules dashboard. FORBIDDEN patterns never cross this boundary."""
     store = _broker(request).rule_store
-    if store is None:
-        return AllowRuleList(rules=[])
     try:
-        stored = store.list()
+        stored = () if store is None else store.list()
+        ask = () if store is None else store.list_ask()
     except StorageError as error:
         raise HTTPException(status_code=503, detail="The rules cannot be read.") from error
     return AllowRuleList(
@@ -195,10 +196,13 @@ async def list_rules(request: Request) -> AllowRuleList:
                 folder=rule.folder,
                 task_id=rule.task_id,
                 created_at=rule.created_at,
+                use_count=rule.use_count,
             )
             for rule in stored
             if rule.kind in ("exact", "tool_in_folder", "tool_for_task")
-        ]
+        ],
+        always_ask=[AskRuleInfo(tool=rule.tool, created_at=rule.created_at) for rule in ask],
+        never=list(request.app.state.never_rules),
     )
 
 
@@ -208,6 +212,36 @@ async def revoke_rule(request: Request, rule_id: Annotated[int, Path(ge=1)]) -> 
     store = _broker(request).rule_store
     try:
         removed = store is not None and store.delete(rule_id)
+    except StorageError as error:
+        raise HTTPException(status_code=503, detail="The rule could not be removed.") from error
+    if not removed:
+        raise HTTPException(status_code=404, detail="There is no such rule.")
+    return await list_rules(request)
+
+
+@router.post("/rules/always-ask", response_model=AllowRuleList)
+async def add_ask_rule(request: Request, body: AskRuleCreate) -> AllowRuleList:
+    """Escalate one tool. This can only make the Guardian ask more often."""
+    store = _broker(request).rule_store
+    if store is None:
+        raise HTTPException(status_code=503, detail="The rule could not be saved.")
+    try:
+        store.add_ask(body.tool)
+    except StorageError as error:
+        if "UNIQUE constraint" in str(error):
+            raise HTTPException(
+                status_code=409, detail="Aegis already always asks for this tool."
+            ) from error
+        raise HTTPException(status_code=503, detail="The rule could not be saved.") from error
+    return await list_rules(request)
+
+
+@router.delete("/rules/always-ask/{tool}", response_model=AllowRuleList)
+async def remove_ask_rule(request: Request, tool: str) -> AllowRuleList:
+    """Restore one tool to the normal autonomy policy; never bypass a hard denial."""
+    store = _broker(request).rule_store
+    try:
+        removed = store is not None and store.delete_ask(tool)
     except StorageError as error:
         raise HTTPException(status_code=503, detail="The rule could not be removed.") from error
     if not removed:

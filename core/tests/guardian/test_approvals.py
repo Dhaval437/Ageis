@@ -378,8 +378,8 @@ def test_a_folder_rule_for_a_call_with_no_folder_is_refused() -> None:
 
 
 def test_an_unreadable_stored_row_is_not_a_rule() -> None:
-    assert AllowRule.from_stored(StoredRule(1, "exact", "t", None, None, None, "x")) is None
-    assert AllowRule.from_stored(StoredRule(2, "everything", "t", None, None, None, "x")) is None
+    assert AllowRule.from_stored(StoredRule(1, "exact", "t", None, None, None, "x", 0)) is None
+    assert AllowRule.from_stored(StoredRule(2, "everything", "t", None, None, None, "x", 0)) is None
 
 
 def test_the_rule_table_refuses_a_rule_that_would_match_everything(store: AllowRuleStore) -> None:
@@ -401,6 +401,48 @@ def test_rules_are_listed_newest_first_and_revocable(store: AllowRuleStore) -> N
     assert store.delete(first.id)
     assert not store.delete(first.id)
     assert [r.id for r in store.list()] == [second.id]
+
+
+def test_rule_uses_and_always_ask_rules_are_durable(store: AllowRuleStore) -> None:
+    rule = store.add("exact", "fs.read_file", params_digest="0" * 64)
+    assert rule.use_count == 0
+    assert store.record_use(rule.id)
+    assert store.list()[0].use_count == 1
+    assert not store.record_use(999)
+
+    added = store.add_ask("fs.write")
+    assert store.list_ask() == (added,)
+    assert store.delete_ask("fs.write")
+    assert not store.delete_ask("fs.write")
+
+    broker = ApprovalBroker(Events(), store)
+    assert broker.record_rule_use(rule.id)
+    assert broker.ask_tools() == frozenset()
+    assert store.list()[0].use_count == 2
+
+
+def test_an_always_ask_rule_overrides_autonomy_and_always_allow(
+    guardian: Guardian, docs: Path
+) -> None:
+    tool = FakeTool(touches=(Target("path", str(docs / "a.pdf"), "read"),))
+    ctx = TaskContext(
+        "trusted",
+        in_scope=lambda _path: True,
+        allow_rules=everything_rules(tool.name, docs),
+        ask_tools=frozenset({tool.name}),
+    )
+    verdict = guardian.evaluate(tool, {}, ctx)
+    assert (verdict.decision, verdict.stage, verdict.allow_rule) == (
+        "confirm",
+        "ask_rule",
+        None,
+    )
+
+
+def test_an_always_ask_rule_never_relaxes_a_denial(guardian: Guardian, docs: Path) -> None:
+    tool = FakeTool(risk="CAUTION", touches=(Target("path", str(docs / "a.pdf"), "write"),))
+    verdict = guardian.evaluate(tool, {}, TaskContext("trusted", ask_tools=frozenset({tool.name})))
+    assert (verdict.decision, verdict.stage) == ("deny", "scope")
 
 
 # --------------------------------------------------------------------------- #

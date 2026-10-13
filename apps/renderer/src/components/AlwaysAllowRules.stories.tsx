@@ -10,6 +10,7 @@ const EXACT: AllowRuleInfo = {
   folder: null,
   task_id: null,
   created_at: '2026-09-25T09:14:03.120Z',
+  use_count: 0,
 };
 const IN_FOLDER: AllowRuleInfo = {
   id: 2,
@@ -18,6 +19,7 @@ const IN_FOLDER: AllowRuleInfo = {
   folder: 'd:\\work\\invoices',
   task_id: null,
   created_at: '2026-09-26T16:40:51.002Z',
+  use_count: 12,
 };
 const FOR_TASK: AllowRuleInfo = {
   id: 3,
@@ -26,6 +28,7 @@ const FOR_TASK: AllowRuleInfo = {
   folder: null,
   task_id: 'task-7f3c',
   created_at: '2026-09-28T11:02:18.500Z',
+  use_count: 1,
 };
 
 /** Every story is a store state; the list has nothing of its own to fake. */
@@ -101,6 +104,7 @@ export const LongestContent: Story = {
           : null,
       task_id: i % 2 === 0 ? null : `task-2026-09-28-quarterly-close-${String(i)}`,
       created_at: '2026-09-28T11:02:18.500Z',
+      use_count: i * 137,
     })),
   }),
 };

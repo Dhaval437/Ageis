@@ -99,6 +99,7 @@ class AllowRule:
     folder: str | None = None
     params_digest: str | None = None
     task_id: str | None = None
+    use_count: int = 0
 
     def matches(
         self,
@@ -122,11 +123,29 @@ class AllowRule:
     def from_stored(cls, stored: StoredRule) -> AllowRule | None:
         """A stored row as a rule, or `None` for a row this build cannot read."""
         if stored.kind == "exact" and stored.params_digest:
-            return cls(stored.id, "exact", stored.tool, params_digest=stored.params_digest)
+            return cls(
+                stored.id,
+                "exact",
+                stored.tool,
+                params_digest=stored.params_digest,
+                use_count=stored.use_count,
+            )
         if stored.kind == "tool_in_folder" and stored.folder:
-            return cls(stored.id, "tool_in_folder", stored.tool, folder=stored.folder)
+            return cls(
+                stored.id,
+                "tool_in_folder",
+                stored.tool,
+                folder=stored.folder,
+                use_count=stored.use_count,
+            )
         if stored.kind == "tool_for_task" and stored.task_id:
-            return cls(stored.id, "tool_for_task", stored.tool, task_id=stored.task_id)
+            return cls(
+                stored.id,
+                "tool_for_task",
+                stored.tool,
+                task_id=stored.task_id,
+                use_count=stored.use_count,
+            )
         return None
 
 

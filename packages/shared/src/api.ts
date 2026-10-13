@@ -330,6 +330,18 @@ export interface AllowRuleInfo {
   /** The task, for `tool_for_task`. */
   readonly task_id: string | null;
   readonly created_at: string;
+  readonly use_count: number;
+}
+
+/** One tool the person chose to always approve first. */
+export interface AskRuleInfo {
+  readonly tool: string;
+  readonly created_at: string;
+}
+
+/** Add a narrowing always-ask rule. A tool name grants no new access. */
+export interface AskRuleCreate {
+  readonly tool: string;
 }
 
 /**
@@ -375,7 +387,10 @@ export interface ScopeUpdate {
   readonly folders: ReadonlyArray<string>;
 }
 
-/** `GET /v1/rules`: every always-allow rule, newest first. Each is revocable. */
+/** `GET /v1/rules`: the complete Rules dashboard, with no FORBIDDEN patterns. */
 export interface AllowRuleList {
   readonly rules: ReadonlyArray<AllowRuleInfo>;
+  readonly always_ask: ReadonlyArray<AskRuleInfo>;
+  /** Reviewed FORBIDDEN sentences only; no patterns. */
+  readonly never: ReadonlyArray<string>;
 }

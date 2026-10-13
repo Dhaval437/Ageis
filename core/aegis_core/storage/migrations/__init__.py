@@ -19,6 +19,7 @@ from aegis_core.storage.migrations import (
     m0002_usage,
     m0003_scopes,
     m0004_allow_rules,
+    m0005_rule_preferences,
 )
 
 
@@ -36,4 +37,5 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     Migration(2, "usage", m0002_usage.SQL),
     Migration(3, "scopes", m0003_scopes.SQL),
     Migration(4, "allow_rules", m0004_allow_rules.SQL),
+    Migration(5, "rule_preferences", m0005_rule_preferences.SQL),
 )

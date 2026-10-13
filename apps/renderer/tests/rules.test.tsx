@@ -2,8 +2,9 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AllowRuleInfo, BridgeResult, CoreRequest, CoreResponse } from '@aegis/shared';
 import { AlwaysAllowRules } from '@/components/AlwaysAllowRules';
+import { RulePreferences } from '@/components/RulePreferences';
 import { describeRule, formatCreated, parseRule, parseRuleList } from '@/lib/rules-api';
-import { loadRules, revokeRule } from '@/lib/rules-client';
+import { addAskRule, loadRules, removeAskRule, revokeRule } from '@/lib/rules-client';
 import { INITIAL_RULES, useRulesStore } from '@/stores/rules';
 import { INITIAL_STREAM, useStreamStore } from '@/stores/stream';
 
@@ -16,6 +17,7 @@ const EXACT: AllowRuleInfo = {
   folder: null,
   task_id: null,
   created_at: '2026-09-25T09:14:03.120Z',
+  use_count: 0,
 };
 const IN_FOLDER: AllowRuleInfo = {
   id: 2,
@@ -24,6 +26,7 @@ const IN_FOLDER: AllowRuleInfo = {
   folder: 'd:\\work\\invoices',
   task_id: null,
   created_at: '2026-09-26T16:40:51.002Z',
+  use_count: 12,
 };
 const FOR_TASK: AllowRuleInfo = {
   id: 3,
@@ -32,7 +35,14 @@ const FOR_TASK: AllowRuleInfo = {
   folder: null,
   task_id: 'task-7f3c',
   created_at: '2026-09-28T11:02:18.500Z',
+  use_count: 1,
 };
+
+const NEVER = ["Aegis never changes Windows' own files."];
+
+function dashboard(rules: AllowRuleInfo[] = [FOR_TASK, IN_FOLDER, EXACT]) {
+  return { rules, always_ask: [], never: NEVER };
+}
 
 function ok(status: number, body: unknown): BridgeResult<CoreResponse> {
   return { ok: true, value: { status, body } };
@@ -46,8 +56,8 @@ function fakeBridge(answers: {
   const request = vi.fn((req: CoreRequest) =>
     Promise.resolve(
       req.method === 'DELETE'
-        ? (answers.del ?? ok(200, { rules: [] }))
-        : (answers.get ?? ok(200, { rules: [FOR_TASK, IN_FOLDER, EXACT] })),
+        ? (answers.del ?? ok(200, dashboard([])))
+        : (answers.get ?? ok(200, dashboard())),
     ),
   );
   return { core: { request, subscribe: vi.fn(), restart: vi.fn() } };
@@ -61,8 +71,16 @@ beforeEach(() => {
 describe('parsing', () => {
   it('accepts every kind and a list of them', () => {
     for (const rule of [EXACT, IN_FOLDER, FOR_TASK]) expect(parseRule(rule)).toEqual(rule);
-    expect(parseRuleList({ rules: [EXACT, IN_FOLDER] })).toEqual([EXACT, IN_FOLDER]);
-    expect(parseRuleList({ rules: [] })).toEqual([]);
+    expect(parseRuleList({ rules: [EXACT, IN_FOLDER], always_ask: [], never: NEVER })).toEqual({
+      rules: [EXACT, IN_FOLDER],
+      alwaysAsk: [],
+      never: NEVER,
+    });
+    expect(parseRuleList({ rules: [], always_ask: [], never: [] })).toEqual({
+      rules: [],
+      alwaysAsk: [],
+      never: [],
+    });
   });
 
   it.each([
@@ -72,6 +90,8 @@ describe('parsing', () => {
     ['an unknown kind', { ...EXACT, kind: 'everything' }],
     ['no tool', { ...EXACT, tool: 7 }],
     ['no created_at', { ...EXACT, created_at: null }],
+    ['no use count', { ...EXACT, use_count: undefined }],
+    ['a negative use count', { ...EXACT, use_count: -1 }],
     ['a folder rule without its folder', { ...IN_FOLDER, folder: null }],
     ['a folder rule with an empty folder', { ...IN_FOLDER, folder: '' }],
     ['a task rule without its task', { ...FOR_TASK, task_id: null }],
@@ -82,7 +102,9 @@ describe('parsing', () => {
   });
 
   it('refuses a list with any bad rule in it, or no list at all', () => {
-    expect(parseRuleList({ rules: [EXACT, { ...EXACT, kind: 'all' }] })).toBeNull();
+    expect(
+      parseRuleList({ rules: [EXACT, { ...EXACT, kind: 'all' }], always_ask: [], never: NEVER }),
+    ).toBeNull();
     expect(parseRuleList({ scopes: [] })).toBeNull();
     expect(parseRuleList(null)).toBeNull();
   });
@@ -131,7 +153,9 @@ describe('loadRules', () => {
   });
 
   it('refuses an answer it cannot read rather than showing part of it', async () => {
-    await loadRules(fakeBridge({ get: ok(200, { rules: [{ ...EXACT, kind: 'all' }] }) }));
+    await loadRules(
+      fakeBridge({ get: ok(200, { ...dashboard(), rules: [{ ...EXACT, kind: 'all' }] }) }),
+    );
     expect(useRulesStore.getState()).toMatchObject({ status: 'error', rules: [] });
   });
 
@@ -149,7 +173,7 @@ describe('revokeRule', () => {
   });
 
   it('sends DELETE /rules/{id} and shows the rules that remain', async () => {
-    const b = fakeBridge({ del: ok(200, { rules: [FOR_TASK, EXACT] }) });
+    const b = fakeBridge({ del: ok(200, dashboard([FOR_TASK, EXACT])) });
     await revokeRule(IN_FOLDER, b);
     expect(b.core.request).toHaveBeenCalledWith({ method: 'DELETE', path: '/rules/2' });
     expect(useRulesStore.getState()).toMatchObject({
@@ -174,7 +198,7 @@ describe('revokeRule', () => {
   it('treats a rule already gone as gone, and reads the list again', async () => {
     const b = fakeBridge({
       del: ok(404, { detail: 'There is no such rule.' }),
-      get: ok(200, { rules: [EXACT] }),
+      get: ok(200, dashboard([EXACT])),
     });
     await revokeRule(IN_FOLDER, b);
     expect(b.core.request).toHaveBeenLastCalledWith({ method: 'GET', path: '/rules' });
@@ -194,7 +218,7 @@ describe('revokeRule', () => {
     );
     const pending = revokeRule(IN_FOLDER, b);
     expect(useRulesStore.getState().revoking).toBe(2);
-    finish(ok(200, { rules: [] }));
+    finish(ok(200, dashboard([])));
     await pending;
     expect(useRulesStore.getState().revoking).toBeNull();
   });
@@ -249,7 +273,7 @@ describe('<AlwaysAllowRules />', () => {
     );
     expect(screen.getByRole('button', { name: 'Revoke the rule for fs.write' })).toBeDisabled();
     await act(async () => {
-      finish(ok(200, { rules: [FOR_TASK] }));
+      finish(ok(200, dashboard([FOR_TASK])));
       await Promise.resolve();
     });
     expect(screen.queryByRole('article', { name: /^fs\.move:/ })).toBeNull();
@@ -275,5 +299,48 @@ describe('<AlwaysAllowRules />', () => {
       await Promise.resolve();
     });
     expect(b.core.request).toHaveBeenCalledWith({ method: 'GET', path: '/rules' });
+  });
+});
+
+describe('always ask and never', () => {
+  it('adds and removes a narrowing always-ask rule', async () => {
+    const b = fakeBridge({
+      get: ok(200, { ...dashboard([]), always_ask: [{ tool: 'fs.write', created_at: 'x' }] }),
+      del: ok(200, dashboard([])),
+    });
+    await addAskRule('fs.write', b);
+    expect(b.core.request).toHaveBeenCalledWith({
+      method: 'POST',
+      path: '/rules/always-ask',
+      body: { tool: 'fs.write' },
+    });
+    expect(useRulesStore.getState().alwaysAsk[0]?.tool).toBe('fs.write');
+    await removeAskRule('fs.write', b);
+    expect(b.core.request).toHaveBeenLastCalledWith({
+      method: 'DELETE',
+      path: '/rules/always-ask/fs.write',
+    });
+    expect(useRulesStore.getState().alwaysAsk).toEqual([]);
+  });
+
+  it('renders locked built-in rules and edits always ask', async () => {
+    useRulesStore.setState({
+      status: 'ready',
+      alwaysAsk: [{ tool: 'fs.write', created_at: 'x' }],
+      never: NEVER,
+    });
+    const b = fakeBridge({ del: ok(200, dashboard([])) });
+    Object.defineProperty(window, 'aegis', { value: b, configurable: true, writable: true });
+    render(<RulePreferences />);
+    expect(screen.getByLabelText('Built-in never rules')).toHaveTextContent(NEVER[0]!);
+    expect(screen.getByLabelText('Locked')).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Use autonomy setting' }));
+      await Promise.resolve();
+    });
+    expect(b.core.request).toHaveBeenCalledWith({
+      method: 'DELETE',
+      path: '/rules/always-ask/fs.write',
+    });
   });
 });
