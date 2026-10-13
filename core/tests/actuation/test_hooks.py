@@ -40,7 +40,10 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="needs Win32 low
 from aegis_core.actuation import win32  # noqa: E402
 from aegis_core.actuation.input import SendInputBackend  # noqa: E402
 from aegis_core.actuation.preempt import InputMonitor, PreemptEvent, PreemptSignal  # noqa: E402
-from aegis_core.actuation.signature import AEGIS_SIGNATURE  # noqa: E402
+from aegis_core.actuation.signature import (  # noqa: E402
+    AEGIS_HEARTBEAT_SIGNATURE,
+    AEGIS_SIGNATURE,
+)
 
 from tests.actuation import helpers  # noqa: E402
 from tests.actuation.helpers import (  # noqa: E402
@@ -123,6 +126,16 @@ def test_a_tagged_keystroke_does_not_preempt(signal: PreemptSignal) -> None:
 
 
 @pytest.mark.usefixtures("no_chain")
+def test_heartbeat_tags_acknowledge_without_preempting(signal: PreemptSignal) -> None:
+    monitor = InputMonitor(signal)
+    deliver_key(monitor, extra_info=AEGIS_HEARTBEAT_SIGNATURE)
+    deliver_mouse(monitor, extra_info=AEGIS_HEARTBEAT_SIGNATURE)
+    assert monitor._heartbeat_acks["keyboard"].is_set()
+    assert monitor._heartbeat_acks["mouse"].is_set()
+    assert not signal.is_set()
+
+
+@pytest.mark.usefixtures("no_chain")
 def test_an_untagged_keystroke_preempts(signal: PreemptSignal) -> None:
     monitor = InputMonitor(signal)
     deliver_key(monitor, extra_info=0)
@@ -156,8 +169,62 @@ def test_an_untagged_mouse_event_preempts(signal: PreemptSignal) -> None:
 def test_a_near_miss_signature_still_preempts(signal: PreemptSignal) -> None:
     """The comparison is exact. Anything that is not our tag is the human."""
     monitor = InputMonitor(signal)
-    deliver_key(monitor, extra_info=AEGIS_SIGNATURE + 1)
+    deliver_key(monitor, extra_info=AEGIS_SIGNATURE + 2)
     assert signal.is_set()
+
+
+def test_two_missed_heartbeats_latch_the_agent_stopped(
+    monkeypatch: pytest.MonkeyPatch, signal: PreemptSignal
+) -> None:
+    monkeypatch.setattr("aegis_core.actuation.preempt.foreground_blocker", lambda: None)
+    attempts: list[str] = []
+    monitor = InputMonitor(
+        signal,
+        heartbeat_sender=attempts.append,
+        heartbeat_timeout_s=0.001,
+    )
+    monitor._thread = threading.current_thread()
+
+    assert is_running(monitor)
+    assert not monitor._probe("keyboard")
+    assert attempts == ["keyboard", "keyboard"]
+    assert signal.last is not None and signal.last.source == "hook_lost"
+    assert not is_running(monitor)
+    signal.clear()
+    assert signal.is_set(), "a silent hook loss must not be resumable"
+
+
+def test_a_heartbeat_miss_caused_by_uipi_is_walled_off_not_hook_lost(
+    monkeypatch: pytest.MonkeyPatch, signal: PreemptSignal
+) -> None:
+    monkeypatch.setattr("aegis_core.actuation.preempt.foreground_blocker", lambda: object())
+    monitor = InputMonitor(signal, heartbeat_sender=lambda device: None)
+
+    assert not monitor._probe("mouse")
+    assert signal.last is not None and signal.last.source == "walled_off"
+    signal.clear()
+    assert not signal.is_set(), "walled-off pauses remain resumable once the wall is gone"
+
+
+def test_resume_rechecks_hooks_and_latches_a_miss(
+    monkeypatch: pytest.MonkeyPatch, signal: PreemptSignal
+) -> None:
+    monkeypatch.setattr("aegis_core.actuation.preempt.foreground_blocker", lambda: None)
+    monitor = InputMonitor(
+        signal,
+        watch_mouse=False,
+        heartbeat_sender=lambda device: None,
+        heartbeat_timeout_s=0.001,
+    )
+    monitor._thread = threading.current_thread()
+    signal.add_clear_guard(monitor._verify_before_resume)
+    preempt(signal)
+
+    signal.clear()
+
+    assert signal.is_set()
+    assert signal.last is not None and signal.last.source == "hook_lost"
+    assert not is_running(monitor)
 
 
 @pytest.mark.usefixtures("no_chain")
@@ -201,6 +268,25 @@ def test_the_monitor_installs_and_removes_its_hooks(signal: PreemptSignal) -> No
     assert not is_running(monitor)
     monitor.stop()  # idempotent
     assert monitor.callback_errors == 0
+
+
+def test_a_silently_removed_hook_stops_the_monitor(signal: PreemptSignal) -> None:
+    """Reproduce `LowLevelHooksTimeout`'s end state: handle gone, thread alive."""
+    helpers.skip_if_walled_off()
+    with InputMonitor(
+        signal,
+        watch_mouse=False,
+        heartbeat_interval_s=0.01,
+        heartbeat_timeout_s=0.05,
+    ) as monitor:
+        assert settle(signal), "someone was typing during the run"
+        [handle] = monitor._hooks
+        assert win32.user32.UnhookWindowsHookEx(handle)
+        assert signal.wait(1.0), "the heartbeat did not notice the removed hook"
+        assert signal.last is not None and signal.last.source == "hook_lost"
+        assert not is_running(monitor), "the live thread must not masquerade as a live hook"
+        signal.clear()
+        assert signal.is_set(), "hook loss must stay latched until the process restarts"
 
 
 def test_synthetic_keystrokes_do_not_preempt(

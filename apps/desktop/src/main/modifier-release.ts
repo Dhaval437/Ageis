@@ -15,7 +15,10 @@
  * `electron`-free: the keyboard is injected (`win-input.ts` in production).
  */
 
-import type { KeyInput } from './win-input.js';
+import type { InputBarrier, KeyInput } from './win-input.js';
+
+/** The same short retry cadence the core uses for releases UIPI may have dropped. */
+export const OWED_RELEASE_POLL_MS = 20;
 
 /** Shift, Ctrl, Alt and Windows, both sides — the keys invariant 3 is about. */
 export const MODIFIER_VKS: readonly number[] = [
@@ -38,6 +41,22 @@ export interface ReleaseReport {
   readonly unavailable: boolean;
 }
 
+export interface ModifierReleaserOptions {
+  readonly input: KeyInput | null;
+  readonly barrier: InputBarrier | null;
+  readonly onReport: (reason: string, report: ReleaseReport, settledOwed: boolean) => void;
+  readonly onDeferred: (reason: string) => void;
+  readonly onBarrierError: (error: unknown) => void;
+  readonly setTimer?: (callback: () => void, ms: number) => unknown;
+  readonly clearTimer?: (handle: unknown) => void;
+}
+
+export interface ModifierReleaser {
+  /** Release now, or remember the sweep until MAIN's input can land. */
+  readonly release: (reason: string) => void;
+  readonly dispose: () => void;
+}
+
 /**
  * Release every modifier that is down. **Never stops part-way:** a key that fails
  * does not stop the others, as in the core's own `release_all()`.
@@ -56,6 +75,106 @@ export function releaseModifiers(input: KeyInput | null): ReleaseReport {
     }
   }
   return { released, failed, unavailable: false };
+}
+
+/**
+ * Keep the release obligation when UIPI blinds key state and drops injected input.
+ * Calls coalesce into one sweep, retried as soon as the wall falls.
+ */
+export function createModifierReleaser(options: ModifierReleaserOptions): ModifierReleaser {
+  const setTimer =
+    options.setTimer ?? ((callback: () => void, ms: number): unknown => setTimeout(callback, ms));
+  const clearTimer =
+    options.clearTimer ??
+    ((handle: unknown): void => {
+      clearTimeout(handle as NodeJS.Timeout);
+    });
+  let timer: unknown = null;
+  let owedReason: string | null = null;
+  let disposed = false;
+  let failureReported = false;
+  let barrierErrorReported = false;
+
+  function isBlocked(): boolean {
+    if (options.barrier === null) return true;
+    try {
+      const blocked = options.barrier.blocked();
+      barrierErrorReported = false;
+      return blocked;
+    } catch (error: unknown) {
+      if (!barrierErrorReported) options.onBarrierError(error);
+      barrierErrorReported = true;
+      return true;
+    }
+  }
+
+  function clearDebt(): void {
+    if (timer !== null) clearTimer(timer);
+    timer = null;
+    owedReason = null;
+    failureReported = false;
+  }
+
+  function schedule(): void {
+    if (timer !== null || disposed) return;
+    timer = setTimer(retry, OWED_RELEASE_POLL_MS);
+  }
+
+  function retry(): void {
+    timer = null;
+    if (disposed || owedReason === null) return;
+    if (isBlocked()) {
+      schedule();
+      return;
+    }
+    const reason = owedReason;
+    const report = releaseModifiers(options.input);
+    const stillOwed = report.failed.length > 0 || isBlocked();
+    if (!failureReported || !stillOwed) {
+      options.onReport('owed release after ' + reason, report, !stillOwed);
+      failureReported = report.failed.length > 0;
+    }
+    if (stillOwed) {
+      schedule();
+      return;
+    }
+    clearDebt();
+  }
+
+  return {
+    release: (reason) => {
+      if (disposed) return;
+      if (options.input === null || options.barrier === null) {
+        options.onReport(reason, releaseModifiers(null), false);
+        return;
+      }
+      if (isBlocked()) {
+        if (owedReason === null) {
+          owedReason = reason;
+          options.onDeferred(reason);
+        }
+        schedule();
+        return;
+      }
+      const report = releaseModifiers(options.input);
+      const stillOwed = report.failed.length > 0 || isBlocked();
+      options.onReport(reason, report, false);
+      if (stillOwed) {
+        if (owedReason === null) {
+          owedReason = reason;
+          options.onDeferred(reason);
+        }
+        failureReported = report.failed.length > 0;
+        schedule();
+      } else if (owedReason !== null) {
+        clearDebt();
+      }
+    },
+    dispose: () => {
+      disposed = true;
+      clearDebt();
+    },
+  };
 }
 
 /** One log line, with counts and key codes only. */

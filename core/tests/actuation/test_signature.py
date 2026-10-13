@@ -8,11 +8,13 @@ pause the moment it clicked anything. These tests are the guard on that.
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Win32 SendInput")
 
+from aegis_core.actuation import input as input_module  # noqa: E402
 from aegis_core.actuation import win32  # noqa: E402
 from aegis_core.actuation.input import (  # noqa: E402
     VK_LCONTROL,
@@ -20,12 +22,24 @@ from aegis_core.actuation.input import (  # noqa: E402
     MouseButton,
     SendInputBackend,
 )
-from aegis_core.actuation.signature import AEGIS_SIGNATURE  # noqa: E402
+from aegis_core.actuation.signature import (  # noqa: E402
+    AEGIS_HEARTBEAT_SIGNATURE,
+    AEGIS_SIGNATURE,
+)
+from aegis_core.perception import win32 as display_win32  # noqa: E402
 
 #: The complete public surface of the backend. A new method here without a
 #: matching case below fails `test_no_untagged_code_path_exists`.
 BACKEND_METHODS = frozenset(
-    {"key", "unicode_char", "mouse_move", "mouse_move_absolute", "mouse_button", "scroll"}
+    {
+        "key",
+        "unicode_char",
+        "mouse_move",
+        "mouse_move_absolute",
+        "mouse_button",
+        "scroll",
+        "hook_heartbeat",
+    }
 )
 #: Methods that only *read* Windows' state (`P3-20`). Locked separately, and checked
 #: below to send nothing at all — so they cannot be an untagged path either.
@@ -88,6 +102,41 @@ def test_every_event_type_is_tagged(captured: list[win32.INPUT]) -> None:
     # 0 is what an untagged third-party event carries; ours must never look like one.
     assert AEGIS_SIGNATURE
     assert all(extra_info(record) == AEGIS_SIGNATURE for record in captured)
+
+
+def test_keyboard_heartbeat_uses_its_reserved_tag(captured: list[win32.INPUT]) -> None:
+    SendInputBackend(signature=AEGIS_HEARTBEAT_SIGNATURE).hook_heartbeat("keyboard")
+    [record] = captured
+    assert extra_info(record) == AEGIS_HEARTBEAT_SIGNATURE
+    assert record.u.ki.dwFlags & win32.KEYEVENTF_KEYUP
+
+
+def test_mouse_heartbeat_restores_thread_dpi_awareness(
+    monkeypatch: pytest.MonkeyPatch, captured: list[win32.INPUT]
+) -> None:
+    contexts: list[int] = []
+
+    def set_context(context: int) -> int:
+        contexts.append(context)
+        return 123
+
+    monkeypatch.setattr(win32, "cursor_pos", lambda: (40, 50))
+    monkeypatch.setattr(display_win32, "set_thread_dpi_awareness_context", set_context)
+    monkeypatch.setattr(
+        input_module,
+        "query_layout",
+        lambda: SimpleNamespace(to_absolute=lambda point: (100, 200)),
+    )
+
+    SendInputBackend(signature=AEGIS_HEARTBEAT_SIGNATURE).hook_heartbeat("mouse")
+
+    assert contexts == [
+        display_win32.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        123,
+    ]
+    [record] = captured
+    assert extra_info(record) == AEGIS_HEARTBEAT_SIGNATURE
+    assert record.u.mi.dwFlags & win32.MOUSEEVENTF_ABSOLUTE
 
 
 def test_right_hand_modifiers_are_flagged_extended(captured: list[win32.INPUT]) -> None:

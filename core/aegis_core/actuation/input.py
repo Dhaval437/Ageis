@@ -43,13 +43,14 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 
 from aegis_core.actuation import win32
 from aegis_core.actuation.integrity import Blocker, foreground_blocker
 from aegis_core.actuation.keys import (
     MODIFIER_VKS,
     VK_CONTROL,
+    VK_F1,
     VK_LCONTROL,
     VK_LMENU,
     VK_LSHIFT,
@@ -68,7 +69,14 @@ from aegis_core.actuation.killswitch import KillSwitch
 from aegis_core.actuation.motion import Motion, duration, dwell, plan_path
 from aegis_core.actuation.preempt import PreemptEvent, PreemptSignal
 from aegis_core.actuation.signature import AEGIS_SIGNATURE
-from aegis_core.perception.display import DisplayLayout, OffScreenError, Point, verify_layout
+from aegis_core.perception import win32 as display_win32
+from aegis_core.perception.display import (
+    DisplayLayout,
+    OffScreenError,
+    Point,
+    query_layout,
+    verify_layout,
+)
 
 #: Re-exported: older callers import the modifier names from here.
 __all__ = [
@@ -266,6 +274,27 @@ class SendInputBackend:
                 self._mouse_event(data=dx * win32.WHEEL_DELTA, flags=win32.MOUSEEVENTF_HWHEEL)
             )
         win32.send_input(events)
+
+    def hook_heartbeat(self, device: Literal["keyboard", "mouse"]) -> None:
+        """Send a tagged no-op that the corresponding low-level hook can acknowledge."""
+        if device == "keyboard":
+            self.key(VK_F1 + 23, down=False)  # F24 key-up: no held-key state to change
+            return
+        if device != "mouse":
+            raise ValueError(f"unknown hook device: {device}")
+        point = win32.cursor_pos()
+        if point is None:
+            raise OSError("the cursor is unavailable")
+        previous_awareness = display_win32.set_thread_dpi_awareness_context(
+            display_win32.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        )
+        if previous_awareness is None:
+            raise OSError("the heartbeat thread's DPI awareness could not be set")
+        try:
+            absolute = query_layout().to_absolute(Point(*point))
+        finally:
+            display_win32.set_thread_dpi_awareness_context(previous_awareness)
+        self.mouse_move_absolute(*absolute)
 
     def blocker(self) -> Blocker | None:
         return foreground_blocker()

@@ -38,8 +38,13 @@ import type { ApprovalAnswer } from './approval-policy.js';
 import { createHudVisibility, type HudVisibility } from './hud-visibility.js';
 import { createStopFeedback, type StopFeedback } from './stop-feedback.js';
 import { flashScreens } from './flash.js';
-import { describeRelease, releaseModifiers } from './modifier-release.js';
-import { nativeForeground, nativeKeyInput } from './win-input.js';
+import {
+  createModifierReleaser,
+  describeRelease,
+  type ModifierReleaser,
+  type ReleaseReport,
+} from './modifier-release.js';
+import { nativeForeground, nativeInputBarrier, nativeKeyInput } from './win-input.js';
 import {
   createSupervisor,
   resolveCoreLaunch,
@@ -61,6 +66,7 @@ let overlay: Overlay | null = null;
 let approvalWindow: ApprovalWindow | null = null;
 let hudVisibility: HudVisibility | null = null;
 let stopFeedback: StopFeedback | null = null;
+let modifierReleaser: ModifierReleaser | null = null;
 /** Whether a task is running, learnt from the stream MAIN forwards (P3-07). */
 const taskActivity = createTaskActivity();
 let hotkeys: KillSwitchHotkeys | null = null;
@@ -206,6 +212,17 @@ function bootstrap(): void {
         },
       });
       supervisor = createCoreSupervisor();
+      modifierReleaser = createModifierReleaser({
+        input: nativeKeyInput(),
+        barrier: nativeInputBarrier(),
+        onReport: logModifierRelease,
+        onDeferred: (reason) => {
+          console.warn('[main] ' + reason + ': modifier release owed until the input wall falls');
+        },
+        onBarrierError: (error) => {
+          console.error('[main] could not check the foreground input wall', error);
+        },
+      });
 
       // Invariant 2: armed before the window exists and before the core has
       // answered, so the stop works from the first frame — including while the
@@ -397,12 +414,21 @@ function logKillReport(report: KillReport): void {
  * does, through its own keyboard (P3-15). Synchronous, so nothing runs before it.
  */
 function releaseHeldModifiers(reason: string): void {
-  const report = releaseModifiers(nativeKeyInput());
-  if (report.released.length > 0 || report.failed.length > 0 || report.unavailable) {
-    const line = describeRelease(reason, report);
-    if (report.failed.length > 0 || report.unavailable) console.error(line);
-    else console.warn(line);
+  modifierReleaser?.release(reason);
+}
+
+function logModifierRelease(reason: string, report: ReleaseReport, settledOwed: boolean): void {
+  if (
+    !settledOwed &&
+    report.released.length === 0 &&
+    report.failed.length === 0 &&
+    !report.unavailable
+  ) {
+    return;
   }
+  const line = describeRelease(reason, report);
+  if (report.failed.length > 0 || report.unavailable) console.error(line);
+  else console.warn(line);
 }
 
 /**

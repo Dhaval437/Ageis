@@ -1,10 +1,22 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type * as KoffiModule from 'koffi';
-import { MODIFIER_VKS, describeRelease, releaseModifiers } from '../src/main/modifier-release.js';
-import { AEGIS_SIGNATURE, nativeKeyInput, type KeyInput } from '../src/main/win-input.js';
+import {
+  MODIFIER_VKS,
+  OWED_RELEASE_POLL_MS,
+  createModifierReleaser,
+  describeRelease,
+  releaseModifiers,
+} from '../src/main/modifier-release.js';
+import {
+  AEGIS_SIGNATURE,
+  nativeInputBarrier,
+  nativeKeyInput,
+  type InputBarrier,
+  type KeyInput,
+} from '../src/main/win-input.js';
 
 /**
  * MAIN's own modifier release (`RECOVERY.md § 4`, P3-15): which keys, that it never
@@ -82,6 +94,154 @@ describe('releaseModifiers', () => {
   });
 });
 
+interface FakeTimer {
+  readonly callback: () => void;
+  readonly ms: number;
+  cleared: boolean;
+}
+
+describe('createModifierReleaser', () => {
+  function setup(down: number[] = [LSHIFT]) {
+    const keyboard = fakeKeyboard(down);
+    const barrier: InputBarrier & { walled: boolean } = {
+      walled: false,
+      blocked() {
+        return this.walled;
+      },
+    };
+    const timers: FakeTimer[] = [];
+    const onReport = vi.fn();
+    const onDeferred = vi.fn();
+    const releaser = createModifierReleaser({
+      input: keyboard,
+      barrier,
+      onReport,
+      onDeferred,
+      onBarrierError: vi.fn(),
+      setTimer: (callback, ms) => {
+        const timer: FakeTimer = { callback, ms, cleared: false };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimer: (handle) => {
+        (handle as FakeTimer).cleared = true;
+      },
+    });
+    return { barrier, keyboard, onDeferred, onReport, releaser, timers };
+  }
+
+  it('owes the sweep without trusting key state behind a higher-integrity window', () => {
+    const { barrier, keyboard, onDeferred, releaser, timers } = setup();
+    barrier.walled = true;
+    releaser.release('the core died');
+
+    expect(keyboard.ups).toEqual([]);
+    expect(onDeferred).toHaveBeenCalledWith('the core died');
+    expect(timers).toHaveLength(1);
+    expect(timers[0]?.ms).toBe(OWED_RELEASE_POLL_MS);
+  });
+
+  it('settles the owed sweep when the input wall falls', () => {
+    const { barrier, keyboard, onReport, releaser, timers } = setup([LSHIFT, RCONTROL]);
+    barrier.walled = true;
+    releaser.release('the core died');
+    barrier.walled = false;
+    timers[0]?.callback();
+
+    expect(keyboard.ups).toEqual([LSHIFT, RCONTROL]);
+    expect(onReport).toHaveBeenCalledWith(
+      'owed release after the core died',
+      expect.objectContaining({ released: [LSHIFT, RCONTROL], failed: [] }),
+      true,
+    );
+  });
+
+  it('coalesces repeated release requests while the same wall remains', () => {
+    const { barrier, onDeferred, releaser, timers } = setup();
+    barrier.walled = true;
+    releaser.release('first');
+    releaser.release('second');
+
+    expect(timers).toHaveLength(1);
+    expect(onDeferred).toHaveBeenCalledTimes(1);
+  });
+
+  it('a later safe call settles the debt and cancels its pending retry', () => {
+    const { barrier, keyboard, onReport, releaser, timers } = setup();
+    barrier.walled = true;
+    releaser.release('first');
+    barrier.walled = false;
+    releaser.release('second');
+
+    expect(keyboard.ups).toEqual([LSHIFT]);
+    expect(timers[0]?.cleared).toBe(true);
+    const reports = onReport.mock.calls.length;
+    timers[0]?.callback();
+    expect(onReport).toHaveBeenCalledTimes(reports);
+  });
+
+  it('reports a barrier error once while treating it as a wall', () => {
+    const timers: FakeTimer[] = [];
+    const onBarrierError = vi.fn();
+    const releaser = createModifierReleaser({
+      input: fakeKeyboard([LSHIFT]),
+      barrier: {
+        blocked: () => {
+          throw new Error('probe failed');
+        },
+      },
+      onReport: vi.fn(),
+      onDeferred: vi.fn(),
+      onBarrierError,
+      setTimer: (callback, ms) => {
+        const timer: FakeTimer = { callback, ms, cleared: false };
+        timers.push(timer);
+        return timer;
+      },
+    });
+
+    releaser.release('the core died');
+    timers[0]?.callback();
+    expect(onBarrierError).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the debt when focus becomes walled during a release', () => {
+    const keyboard = fakeKeyboard([LSHIFT]);
+    const blocked = vi
+      .fn()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true)
+      .mockReturnValue(false);
+    const timers: FakeTimer[] = [];
+    const releaser = createModifierReleaser({
+      input: keyboard,
+      barrier: { blocked },
+      onReport: vi.fn(),
+      onDeferred: vi.fn(),
+      onBarrierError: vi.fn(),
+      setTimer: (callback, ms) => {
+        const timer: FakeTimer = { callback, ms, cleared: false };
+        timers.push(timer);
+        return timer;
+      },
+    });
+
+    releaser.release('race');
+    expect(timers).toHaveLength(1);
+    timers[0]?.callback();
+    expect(blocked).toHaveBeenCalledTimes(4);
+  });
+
+  it('dispose cancels a pending owed sweep', () => {
+    const { barrier, releaser, timers } = setup();
+    barrier.walled = true;
+    releaser.release('the core died');
+    releaser.dispose();
+
+    expect(timers[0]?.cleared).toBe(true);
+  });
+});
+
 describe('the signature', () => {
   it('is the same value the core stamps on its own events', () => {
     const source = readFileSync(
@@ -142,6 +302,63 @@ describe.runIf(process.platform === 'win32')('live, on this machine’s keyboard
   function keyDown(vk: number): void {
     expect(sendKey(vk, vk === RCONTROL ? 1 : 0)).toBe(1);
   }
+
+  async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
+    const deadline = performance.now() + timeoutMs;
+    while (performance.now() < deadline) {
+      if (predicate()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return false;
+  }
+
+  it('can classify whether UIPI walls off the foreground window', () => {
+    const barrier = nativeInputBarrier();
+    expect(barrier).not.toBeNull();
+    expect(typeof barrier?.blocked()).toBe('boolean');
+  });
+
+  it.runIf(process.env['AEGIS_ELEVATED_WINDOW_LIVE'] === '1')(
+    'owes a held Shift behind an elevated window and releases it when focus returns',
+    async () => {
+      const barrier = nativeInputBarrier();
+      const keyboard = nativeKeyInput();
+      expect(barrier).not.toBeNull();
+      expect(keyboard).not.toBeNull();
+      if (barrier === null || keyboard === null) return;
+      expect(barrier.blocked()).toBe(false);
+      let deferred = false;
+      let settled = false;
+      const releaser = createModifierReleaser({
+        input: keyboard,
+        barrier,
+        onReport: (_reason, _report, settledOwed) => {
+          settled ||= settledOwed;
+        },
+        onDeferred: () => {
+          deferred = true;
+        },
+        onBarrierError: (error) => {
+          throw error;
+        },
+      });
+      try {
+        keyDown(LSHIFT);
+        expect(await waitUntil(() => barrier.blocked(), 15_000)).toBe(true);
+        releaser.release('the live elevated-window probe');
+        expect(deferred).toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(settled).toBe(false);
+        expect(await waitUntil(() => !barrier.blocked(), 15_000)).toBe(true);
+        expect(await waitUntil(() => settled, 2_000)).toBe(true);
+        expect(keyboard.isDown(LSHIFT)).toBe(false);
+      } finally {
+        releaser.dispose();
+        sendKey(LSHIFT, KEYEVENTF_KEYUP);
+      }
+    },
+    35_000,
+  );
 
   it('a Shift and a right Ctrl left down by "a dead core" come up', () => {
     const keyboard = nativeKeyInput();

@@ -38,6 +38,9 @@ const INPUT_KEYBOARD = 1;
 const KEYEVENTF_EXTENDEDKEY = 0x0001;
 const KEYEVENTF_KEYUP = 0x0002;
 const MAPVK_VK_TO_VSC_EX = 4;
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const TOKEN_QUERY = 0x0008;
+const TOKEN_INTEGRITY_LEVEL = 25;
 
 /** Right Ctrl, right Alt and both Windows keys: the extended modifiers. */
 const EXTENDED = new Set([0xa3, 0xa5, 0x5b, 0x5c]);
@@ -47,6 +50,11 @@ export interface KeyInput {
   readonly isDown: (vk: number) => boolean;
   /** Sends one tagged `KEYUP`. Throws if Windows refused it. */
   readonly keyUp: (vk: number) => void;
+}
+
+export interface InputBarrier {
+  /** Whether UIPI can drop MAIN's input to the window in front. */
+  readonly blocked: () => boolean;
 }
 
 /** A window handle, as Windows gives it. Opaque: only ever handed back to Windows. */
@@ -62,6 +70,7 @@ export interface ForegroundWindows {
 interface Native {
   GetForegroundWindow: () => WindowHandle;
   SetForegroundWindow: (handle: WindowHandle) => number;
+  foregroundOutranks: () => boolean;
   GetAsyncKeyState: (vk: number) => number;
   MapVirtualKeyW: (code: number, mapType: number) => number;
   SendInput: (count: number, inputs: unknown[], size: number) => number;
@@ -77,6 +86,8 @@ function load(): Native | null {
     const require = createRequire(import.meta.url);
     const koffi = require('koffi') as Koffi;
     const user32 = koffi.load('user32.dll');
+    const kernel32 = koffi.load('kernel32.dll');
+    const advapi32 = koffi.load('advapi32.dll');
     const KEYBDINPUT = koffi.struct('AEGIS_KEYBDINPUT', {
       wVk: 'uint16',
       wScan: 'uint16',
@@ -96,9 +107,77 @@ function load(): Native | null {
     });
     const UNION = koffi.union('AEGIS_INPUT_UNION', { mi: MOUSEINPUT, ki: KEYBDINPUT });
     const INPUT = koffi.struct('AEGIS_INPUT', { type: 'uint32', u: UNION });
+    const GetForegroundWindow = user32.func('uintptr_t __stdcall GetForegroundWindow()');
+    const GetWindowThreadProcessId = user32.func(
+      'uint32 __stdcall GetWindowThreadProcessId(uintptr_t hWnd, _Out_ uint32 *lpdwProcessId)',
+    );
+    const OpenProcess = kernel32.func(
+      'uintptr_t __stdcall OpenProcess(uint32 dwDesiredAccess, int bInheritHandle, uint32 dwProcessId)',
+    );
+    const CloseHandle = kernel32.func('int __stdcall CloseHandle(uintptr_t hObject)');
+    const OpenProcessToken = advapi32.func(
+      'int __stdcall OpenProcessToken(uintptr_t ProcessHandle, uint32 DesiredAccess, _Out_ uintptr_t *TokenHandle)',
+    );
+    const GetTokenInformation = advapi32.func(
+      'int __stdcall GetTokenInformation(uintptr_t TokenHandle, int TokenInformationClass, _Out_ void *TokenInformation, uint32 TokenInformationLength, _Out_ uint32 *ReturnLength)',
+    );
+    const GetSidSubAuthorityCount = advapi32.func(
+      'uint8 * __stdcall GetSidSubAuthorityCount(const void *pSid)',
+    );
+    const GetSidSubAuthority = advapi32.func(
+      'uint32 * __stdcall GetSidSubAuthority(const void *pSid, uint32 nSubAuthority)',
+    );
+
+    function processIntegrity(pid: number): number | null {
+      const processHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) as WindowHandle;
+      if (Number(processHandle) === 0) return null;
+      const tokenHandle: Array<WindowHandle | null> = [null];
+      try {
+        if (OpenProcessToken(processHandle, TOKEN_QUERY, tokenHandle) === 0) return null;
+        const token = tokenHandle[0];
+        if (token === null || Number(token) === 0) return null;
+        try {
+          const label = Buffer.alloc(64);
+          const returned = [0];
+          if (
+            GetTokenInformation(token, TOKEN_INTEGRITY_LEVEL, label, label.length, returned) === 0
+          ) {
+            return null;
+          }
+          const sid = koffi.decode(label, 'uintptr_t') as WindowHandle;
+          if (Number(sid) === 0) return null;
+          const countPointer = GetSidSubAuthorityCount(sid) as WindowHandle;
+          if (Number(countPointer) === 0) return null;
+          const count = koffi.decode(countPointer, 'uint8') as number;
+          if (count === 0) return null;
+          const ridPointer = GetSidSubAuthority(sid, count - 1) as WindowHandle;
+          if (Number(ridPointer) === 0) return null;
+          return koffi.decode(ridPointer, 'uint32') as number;
+        } finally {
+          CloseHandle(token);
+        }
+      } finally {
+        CloseHandle(processHandle);
+      }
+    }
+
+    const ownIntegrity = processIntegrity(process.pid);
     native = {
-      GetForegroundWindow: user32.func('uintptr_t __stdcall GetForegroundWindow()'),
+      GetForegroundWindow,
       SetForegroundWindow: user32.func('int __stdcall SetForegroundWindow(uintptr_t hWnd)'),
+      foregroundOutranks: () => {
+        const window = GetForegroundWindow() as WindowHandle;
+        if (Number(window) === 0) return true;
+        const pid = [0];
+        GetWindowThreadProcessId(window, pid);
+        if (pid[0] === 0) return true;
+        const foregroundIntegrity = processIntegrity(pid[0] ?? 0);
+        return (
+          foregroundIntegrity === null ||
+          ownIntegrity === null ||
+          foregroundIntegrity > ownIntegrity
+        );
+      },
       GetAsyncKeyState: user32.func('short __stdcall GetAsyncKeyState(int vKey)'),
       MapVirtualKeyW: user32.func('uint32 __stdcall MapVirtualKeyW(uint32 uCode, uint32 uMapType)'),
       SendInput: user32.func(
@@ -111,6 +190,13 @@ function load(): Native | null {
     native = null;
   }
   return native;
+}
+
+/** Whether MAIN's input can reach the foreground window, or null off Windows. */
+export function nativeInputBarrier(): InputBarrier | null {
+  const api = load();
+  if (api === null) return null;
+  return { blocked: api.foregroundOutranks };
 }
 
 /** The real foreground window, or `null` where it cannot be asked for. */

@@ -10,8 +10,9 @@ polls that signal (`input.py`), not because the hook reaches into it.
 blocking. A low-level hook callback runs on Windows' input path: if it takes
 longer than `LowLevelHooksTimeout` (300 ms by default) Windows silently
 uninstalls the hook, and until then every keystroke on the machine waits behind
-it. Reacting to a preemption — pausing the task, emitting `preempt.triggered` —
-happens on the watcher thread that `PreemptSignal.watch()` starts.
+it. A separate liveness thread sends tagged no-op heartbeats to both hooks. Two
+misses latch `hook_lost`, so Resume cannot make the agent act blind. Reactions
+happen on the watcher thread that `PreemptSignal.watch()` starts.
 
 Windows-only, like the rest of AEGIS (`REMEMBER.md § 4`).
 """
@@ -30,13 +31,15 @@ from types import TracebackType
 from typing import Literal
 
 from aegis_core.actuation import win32
-from aegis_core.actuation.signature import AEGIS_SIGNATURE
+from aegis_core.actuation.integrity import foreground_blocker
+from aegis_core.actuation.signature import AEGIS_HEARTBEAT_SIGNATURE, AEGIS_SIGNATURE
 
 log = logging.getLogger(__name__)
 
 #: `walled_off` is not the hook: `InputController` found a window that outranks us
 #: in front (`integrity.py`), behind which the hooks cannot see the human at all.
-PreemptSource = Literal["mouse", "keyboard", "walled_off"]
+PreemptSource = Literal["mouse", "keyboard", "walled_off", "hook_lost"]
+HookDevice = Literal["mouse", "keyboard"]
 
 #: How long `start()` waits for the hook thread to install its hooks.
 _START_TIMEOUT_S = 5.0
@@ -44,6 +47,10 @@ _START_TIMEOUT_S = 5.0
 _STOP_TIMEOUT_S = 5.0
 #: How often the watcher thread checks the signal while idle.
 _WATCH_POLL_S = 0.02
+#: Healthy callbacks acknowledge almost immediately. One retry tolerates a hook
+#: ahead of ours swallowing an event without leaving the agent blind indefinitely.
+_HEARTBEAT_TIMEOUT_S = 0.25
+_HEARTBEAT_INTERVAL_S = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,11 +74,13 @@ class PreemptSignal:
         self._event = threading.Event()
         self._last: PreemptEvent | None = None
         self._listeners: list[Callable[[PreemptEvent], None]] = []
+        self._clear_guards: list[Callable[[], bool]] = []
         self._listener_lock = threading.Lock()
         self._listener_errors = 0
         #: Bumped by every `clear()`, so the watcher can tell a new preemption
         #: from the one it already dispatched while the signal stayed set.
         self._resumes = 0
+        self._latched = False
 
     # -- hook thread --------------------------------------------------------
 
@@ -81,6 +90,10 @@ class PreemptSignal:
         `_last` is written *before* the event is set, so anything that observes
         `is_set()` also observes `last`.
         """
+        if self._latched:
+            return
+        if event.source == "hook_lost":
+            self._latched = True
         self._last = event
         self._event.set()
 
@@ -104,6 +117,18 @@ class PreemptSignal:
 
     def clear(self) -> None:
         """Re-arm. Only the resume path may call this — never an action itself."""
+        if self._latched:
+            return
+        if self._event.is_set():
+            with self._listener_lock:
+                guards = tuple(self._clear_guards)
+            for guard in guards:
+                try:
+                    if not guard():
+                        return
+                except Exception:
+                    log.exception("preempt.clear_guard_failed")
+                    return
         self._event.clear()
         self._last = None
         self._resumes += 1
@@ -118,6 +143,17 @@ class PreemptSignal:
         """
         with self._listener_lock:
             self._listeners.append(listener)
+
+    def add_clear_guard(self, guard: Callable[[], bool]) -> None:
+        """Require `guard` to pass before a paused signal can resume."""
+        with self._listener_lock:
+            self._clear_guards.append(guard)
+
+    def remove_clear_guard(self, guard: Callable[[], bool]) -> None:
+        """Remove a previously registered resume guard. Idempotent."""
+        with self._listener_lock:
+            if guard in self._clear_guards:
+                self._clear_guards.remove(guard)
 
     @contextmanager
     def watch(self) -> Iterator[None]:
@@ -175,17 +211,29 @@ class InputMonitor:
         watch_keyboard: bool = True,
         mouse_move_threshold_px: int = 0,
         signature: int = AEGIS_SIGNATURE,
+        heartbeat_signature: int = AEGIS_HEARTBEAT_SIGNATURE,
+        heartbeat_interval_s: float = _HEARTBEAT_INTERVAL_S,
+        heartbeat_timeout_s: float = _HEARTBEAT_TIMEOUT_S,
+        heartbeat_sender: Callable[[HookDevice], None] | None = None,
     ) -> None:
         if not (watch_mouse or watch_keyboard):
             raise ValueError("InputMonitor must watch at least one input device")
         if mouse_move_threshold_px < 0:
             raise ValueError("mouse_move_threshold_px must not be negative")
+        if heartbeat_interval_s <= 0 or heartbeat_timeout_s <= 0:
+            raise ValueError("heartbeat timings must be positive")
 
         self._signal = signal
         self._watch_mouse = watch_mouse
         self._watch_keyboard = watch_keyboard
         self._move_threshold = mouse_move_threshold_px
         self._signature = signature
+        self._heartbeat_signature = heartbeat_signature
+        self._heartbeat_interval = heartbeat_interval_s
+        self._heartbeat_timeout = heartbeat_timeout_s
+        self._heartbeat_sender = heartbeat_sender
+        self._resume_guard = self._verify_before_resume
+        self._resume_guard_registered = False
 
         self._thread: threading.Thread | None = None
         self._thread_id: int | None = None
@@ -193,6 +241,14 @@ class InputMonitor:
         self._install_error: BaseException | None = None
         self._callback_errors = 0
         self._last_point: tuple[int, int] | None = None
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_ready = threading.Event()
+        self._liveness_failed = threading.Event()
+        self._heartbeat_thread: threading.Thread | None = None
+        self._heartbeat_acks = {
+            "keyboard": threading.Event(),
+            "mouse": threading.Event(),
+        }
         # A ctypes callback is kept alive only by our reference to it. If one is
         # garbage collected while Windows still holds the hook, the next
         # keystroke on the machine calls freed memory.
@@ -203,7 +259,11 @@ class InputMonitor:
 
     @property
     def running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        return (
+            self._thread is not None
+            and self._thread.is_alive()
+            and not self._liveness_failed.is_set()
+        )
 
     @property
     def callback_errors(self) -> int:
@@ -212,10 +272,11 @@ class InputMonitor:
 
     def start(self) -> None:
         """Install the hooks and return once they are live."""
-        if self.running:
+        if self._thread is not None and self._thread.is_alive():
             raise RuntimeError("InputMonitor is already running")
 
         self._ready.clear()
+        self._liveness_failed.clear()
         self._thread = threading.Thread(target=self._run, name="aegis-input-hooks", daemon=True)
         self._thread.start()
 
@@ -225,12 +286,37 @@ class InputMonitor:
         if self._install_error is not None:
             self._thread = None
             raise self._install_error
+        self._heartbeat_stop.clear()
+        self._heartbeat_ready.clear()
+        self._heartbeat_thread = threading.Thread(
+            target=self._watch_liveness,
+            name="aegis-hook-liveness",
+            daemon=True,
+        )
+        self._heartbeat_thread.start()
+        if not self._heartbeat_ready.wait(_START_TIMEOUT_S):
+            self.stop()
+            raise TimeoutError("input hooks did not answer their first heartbeat in time")
+        if not self._liveness_failed.is_set():
+            self._signal.add_clear_guard(self._resume_guard)
+            self._resume_guard_registered = True
 
     def stop(self) -> None:
         """Uninstall the hooks and join the thread. Idempotent."""
         thread, thread_id = self._thread, self._thread_id
         self._thread = None
+        if self._resume_guard_registered:
+            self._signal.remove_clear_guard(self._resume_guard)
+            self._resume_guard_registered = False
+        self._heartbeat_stop.set()
+        heartbeat_thread, self._heartbeat_thread = self._heartbeat_thread, None
+        heartbeat_stuck = False
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=_STOP_TIMEOUT_S)
+            heartbeat_stuck = heartbeat_thread.is_alive()
         if thread is None:
+            if heartbeat_stuck:
+                raise TimeoutError("input hook liveness thread did not stop")
             return
 
         if thread_id is not None:
@@ -239,6 +325,8 @@ class InputMonitor:
         if thread.is_alive():  # pragma: no cover - a wedged message loop
             raise TimeoutError("input hook thread did not stop")
         self._thread_id = None
+        if heartbeat_stuck:
+            raise TimeoutError("input hook liveness thread did not stop")
 
     def __enter__(self) -> InputMonitor:
         self.start()
@@ -298,13 +386,77 @@ class InputMonitor:
             if result in (0, -1):  # WM_QUIT, or an error we cannot recover from
                 return
 
+    # -- liveness watcher: may do OS calls; never runs on the hook thread -----
+
+    def _watch_liveness(self) -> None:
+        devices = self._devices()
+        first = True
+        while not self._heartbeat_stop.is_set():
+            if not self._signal.is_set():
+                for device in devices:
+                    if not self._probe(device):
+                        break
+            if first:
+                first = False
+                self._heartbeat_ready.set()
+            if self._heartbeat_stop.wait(self._heartbeat_interval):
+                return
+
+    def _devices(self) -> tuple[HookDevice, ...]:
+        devices: list[HookDevice] = []
+        if self._watch_keyboard:
+            devices.append("keyboard")
+        if self._watch_mouse:
+            devices.append("mouse")
+        return tuple(devices)
+
+    def _verify_before_resume(self) -> bool:
+        return all(self._probe(device, while_preempted=True) for device in self._devices())
+
+    def _probe(self, device: HookDevice, *, while_preempted: bool = False) -> bool:
+        acknowledgement = self._heartbeat_acks[device]
+        for _ in range(2):
+            if self._heartbeat_stop.is_set() or (self._signal.is_set() and not while_preempted):
+                return False
+            blocker = foreground_blocker()
+            if blocker is not None:
+                self._signal.trigger(PreemptEvent("walled_off", 0, time.perf_counter()))
+                return False
+            acknowledgement.clear()
+            try:
+                self._send_heartbeat(device)
+            except Exception:
+                log.exception("preempt.heartbeat_send_failed", extra={"device": device})
+                blocker = foreground_blocker()
+                if blocker is not None:
+                    self._signal.trigger(PreemptEvent("walled_off", 0, time.perf_counter()))
+                    return False
+                continue
+            if acknowledgement.wait(self._heartbeat_timeout):
+                return True
+        if while_preempted or not self._signal.is_set():
+            self._liveness_failed.set()
+            self._signal.trigger(PreemptEvent("hook_lost", 0, time.perf_counter()))
+        return False
+
+    def _send_heartbeat(self, device: HookDevice) -> None:
+        if self._heartbeat_sender is not None:
+            self._heartbeat_sender(device)
+            return
+        # Lazy to keep `input.py`'s import of PreemptSignal acyclic.
+        from aegis_core.actuation.input import SendInputBackend
+
+        SendInputBackend(signature=self._heartbeat_signature).hook_heartbeat(device)
+
     # -- callbacks: no I/O, no blocking, no locks ---------------------------
 
     def _on_keyboard(self, n_code: int, w_param: int, l_param: int) -> int:
         if n_code == win32.HC_ACTION:
             try:
                 info = win32.KBDLLHOOKSTRUCT.from_address(l_param)
-                if info.dwExtraInfo != self._signature:
+                if info.dwExtraInfo == self._heartbeat_signature:
+                    self._heartbeat_acks["keyboard"].set()
+                elif info.dwExtraInfo != self._signature:
                     self._signal.trigger(PreemptEvent("keyboard", w_param, time.perf_counter()))
             except Exception:  # see the class docstring
                 # Raising through a ctypes callback into Windows' input path is
@@ -319,7 +471,9 @@ class InputMonitor:
                 info = win32.MSLLHOOKSTRUCT.from_address(l_param)
                 point = (info.pt.x, info.pt.y)
                 previous, self._last_point = self._last_point, point
-                if info.dwExtraInfo != self._signature and not self._is_jitter(
+                if info.dwExtraInfo == self._heartbeat_signature:
+                    self._heartbeat_acks["mouse"].set()
+                elif info.dwExtraInfo != self._signature and not self._is_jitter(
                     w_param, previous, point
                 ):
                     self._signal.trigger(PreemptEvent("mouse", w_param, time.perf_counter()))
