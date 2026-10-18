@@ -39,7 +39,7 @@ from aegis_core.guardian.rules import (
 )
 from aegis_core.server.schemas import RiskTier
 from aegis_core.storage.db import default_data_dir
-from pydantic import JsonValue
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows paths and registry")
 
@@ -276,6 +276,9 @@ def allowed() -> list[Target]:
         cmd("python -c print(1)"),
     ]
 
+class TouchingParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
 
 @dataclass(frozen=True)
 class Touching:
@@ -283,7 +286,11 @@ class Touching:
 
     target: Target
     name: str = "test.tool"
+    schema = TouchingParams
     risk: RiskTier = "SAFE"
+
+    def describe(self, params: Mapping[str, JsonValue]) -> str:
+        return "Test action"
 
     def targets(self, params: Mapping[str, JsonValue]) -> Sequence[Target]:
         return (self.target,)

@@ -32,7 +32,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final, Literal, Protocol
 
-from pydantic import JsonValue
+from pydantic import BaseModel, JsonValue
 
 from aegis_core.guardian import risk
 from aegis_core.guardian.allow_rules import AllowRule, eligible
@@ -53,13 +53,20 @@ scope) than for a FORBIDDEN one (nothing)."""
 
 
 class GuardedTool(Protocol):
-    """What the Guardian needs of a tool. `P4-01`'s registry holds tools to it."""
+    """The common contract for every tool accepted by the registry."""
 
     @property
     def name(self) -> str: ...
 
     @property
+    def schema(self) -> type[BaseModel]: ...
+
+    @property
     def risk(self) -> RiskTier: ...
+
+    def describe(self, params: Mapping[str, JsonValue]) -> str:
+        """Describe one validated call in plain language for the person."""
+        ...
 
     def targets(self, params: Mapping[str, JsonValue]) -> Sequence[Target]:
         """Every path, command or registry key the call would touch, from its params."""

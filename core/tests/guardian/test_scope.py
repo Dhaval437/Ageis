@@ -26,7 +26,7 @@ from aegis_core.guardian.scope import (
 from aegis_core.server.schemas import RiskTier
 from aegis_core.storage.db import StorageError, connect, migrate
 from aegis_core.storage.scopes import ScopeRecord, ScopeStore
-from pydantic import JsonValue
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows path semantics")
 
@@ -286,11 +286,19 @@ def test_the_table_refuses_what_is_not_a_list(store: ScopeStore, tmp_path: Path)
 # --------------------------------------------------------------------------- #
 
 
+class TouchingParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
 @dataclass(frozen=True)
 class Touching:
     target: Target
     name: str = "fs.write_file"
+    schema = TouchingParams
     risk: RiskTier = "CAUTION"
+
+    def describe(self, params: Mapping[str, JsonValue]) -> str:
+        return "Test action"
 
     def targets(self, params: Mapping[str, JsonValue]) -> Sequence[Target]:
         return (self.target,)

@@ -31,16 +31,24 @@ from aegis_core.guardian.rules import Target, canonical_path, parse_rules
 from aegis_core.server.schemas import Autonomy, EventType, RiskTier
 from aegis_core.storage.allow_rules import AllowRuleStore, StoredRule
 from aegis_core.storage.db import StorageError, connect, migrate
-from pydantic import JsonValue
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows path semantics")
+
+
+class FakeParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 @dataclass(frozen=True)
 class FakeTool:
     name: str = "fs.read_file"
+    schema = FakeParams
     risk: RiskTier = "SAFE"
     touches: tuple[Target, ...] = ()
+
+    def describe(self, params: Mapping[str, JsonValue]) -> str:
+        return "Test action"
 
     def targets(self, params: Mapping[str, JsonValue]) -> Sequence[Target]:
         return self.touches

@@ -264,7 +264,17 @@ Hybrid, and **the UI tree comes first**:
 
 ### 6.4 Tools (`tools/`)
 
-Every tool is a class with: `name`, JSON-schema `params`, `risk` tier, `undo()` (or `undoable = False`), and `describe(params) -> str` — the plain-English sentence shown to the user in the approval dialog and the timeline. If you add a tool, you add all five. This is enforced by a test.
+Every tool is a class with: a stable dotted `name`, a strict Pydantic `schema`
+(`extra="forbid"`), a `risk` tier, `undo()` (or an explicit
+`undoable = False`), `describe(params) -> str` — the plain-English sentence shown
+to the user in the approval dialog and the timeline — and
+`targets(params) -> Sequence[guardian.rules.Target]`. `tools/registry.py` rejects
+an incomplete or contradictory contract, duplicate or malformed names, and schemas
+that would silently ignore unknown fields. Model-produced arguments pass through
+`ToolRegistry.validate()` and its JSON-normalised result is the only form that may
+continue to the Guardian. `is_reversible()` is true only when the registered tool
+has a callable `undo()`. If you add a tool, you add the complete contract. This is
+enforced by tests.
 
 v1 tool families:
 

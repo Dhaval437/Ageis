@@ -21,7 +21,7 @@ from aegis_core.guardian.policy import (
 )
 from aegis_core.guardian.rules import Target, canonical_path, parse_rules
 from aegis_core.server.schemas import Autonomy, RiskTier
-from pydantic import JsonValue
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows path semantics")
 
@@ -30,13 +30,21 @@ AUTONOMIES: tuple[Autonomy, ...] = get_args(Autonomy)
 SIGNALS: tuple[Signal, ...] = get_args(Signal)
 
 
+class FakeParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
 @dataclass(frozen=True)
 class FakeTool:
     """A tool that declares whatever targets the test gives it."""
 
     name: str = "fs.write_file"
+    schema = FakeParams
     risk: RiskTier = "CAUTION"
     touches: tuple[Target, ...] = field(default_factory=tuple)
+
+    def describe(self, params: Mapping[str, JsonValue]) -> str:
+        return "Test action"
 
     def targets(self, params: Mapping[str, JsonValue]) -> Sequence[Target]:
         return self.touches
