@@ -48,6 +48,7 @@ from aegis_core.models.schemas import (
     UsageDelta,
     UserMessage,
 )
+from aegis_core.models.tool_names import tool_wire_name
 
 A_KEY = "AIza-test-key-do-not-use-0123456789"
 
@@ -63,6 +64,7 @@ A_TOOL = ToolDef(
     description="List a folder.",
     parameters={"type": "object", "properties": {"path": {"type": "string"}}},
 )
+WIRE_TOOL_NAME = tool_wire_name(A_TOOL.name)
 
 
 def a_request(**overrides: Any) -> ChatRequest:
@@ -97,7 +99,7 @@ def text_chunk(text: str, **kwargs: Any) -> dict[str, Any]:
     return candidate({"text": text}, **kwargs)
 
 
-def call_part(name: str = "fs.list_dir", **args: Any) -> dict[str, Any]:
+def call_part(name: str = WIRE_TOOL_NAME, **args: Any) -> dict[str, Any]:
     return {"functionCall": {"name": name, "args": args}}
 
 
@@ -251,7 +253,7 @@ def test_a_tool_call_becomes_a_function_call_part_with_object_args() -> None:
     )
 
     assert body["contents"][1]["parts"] == [
-        {"functionCall": {"name": "fs.list_dir", "args": {"path": "C:\\"}}}
+        {"functionCall": {"name": WIRE_TOOL_NAME, "args": {"path": "C:\\"}}}
     ]
 
 
@@ -272,7 +274,7 @@ def test_a_tool_result_is_addressed_by_name_not_by_id() -> None:
     assert body["contents"][2] == {
         "role": "user",
         "parts": [
-            {"functionResponse": {"name": "fs.list_dir", "response": {"output": "one file"}}}
+            {"functionResponse": {"name": WIRE_TOOL_NAME, "response": {"output": "one file"}}}
         ],
     }
 
@@ -372,7 +374,7 @@ def test_tools_and_options_are_only_sent_when_asked_for() -> None:
         {
             "functionDeclarations": [
                 {
-                    "name": "fs.list_dir",
+                    "name": WIRE_TOOL_NAME,
                     "description": "List a folder.",
                     "parameters": A_TOOL.parameters,
                 }
@@ -639,7 +641,7 @@ async def test_a_minted_id_survives_the_round_trip_back_to_a_name() -> None:
         )
     )
 
-    assert body["contents"][2]["parts"][0]["functionResponse"]["name"] == "fs.list_dir"
+    assert body["contents"][2]["parts"][0]["functionResponse"]["name"] == WIRE_TOOL_NAME
     await provider.aclose()
 
 

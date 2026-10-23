@@ -52,6 +52,7 @@ from aegis_core.models.schemas import (
     UsageDelta,
     UserMessage,
 )
+from aegis_core.models.tool_names import tool_wire_name
 
 A_KEY = "sk-test-key-do-not-use-0123456789"
 
@@ -76,6 +77,7 @@ A_TOOL = ToolDef(
     description="List a folder.",
     parameters={"type": "object", "properties": {"path": {"type": "string"}}},
 )
+WIRE_TOOL_NAME = tool_wire_name(A_TOOL.name)
 
 
 def a_request(**overrides: Any) -> ChatRequest:
@@ -234,7 +236,7 @@ def test_every_role_maps_to_its_wire_shape() -> None:
             {
                 "id": "c1",
                 "type": "function",
-                "function": {"name": "fs.list_dir", "arguments": '{"path": "C:\\\\"}'},
+                "function": {"name": WIRE_TOOL_NAME, "arguments": '{"path": "C:\\\\"}'},
             }
         ],
     }
@@ -277,7 +279,7 @@ def test_tools_and_options_are_only_sent_when_asked_for() -> None:
         TEST_CONFIG,
     )
 
-    assert full["tools"][0]["function"]["name"] == "fs.list_dir"
+    assert full["tools"][0]["function"]["name"] == WIRE_TOOL_NAME
     assert full["tool_choice"] == "required"
     assert full["temperature"] == 0.2
     assert full["max_tokens"] == 256
@@ -406,7 +408,7 @@ async def test_a_tool_call_is_emitted_once_whole_never_in_fragments() -> None:
                             {
                                 "index": 0,
                                 "id": "call_1",
-                                "function": {"name": "fs.list_dir", "arguments": '{"pa'},
+                                "function": {"name": WIRE_TOOL_NAME, "arguments": '{"pa'},
                             }
                         ]
                     },

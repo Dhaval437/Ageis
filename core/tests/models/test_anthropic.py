@@ -50,6 +50,7 @@ from aegis_core.models.schemas import (
     UsageDelta,
     UserMessage,
 )
+from aegis_core.models.tool_names import tool_wire_name
 
 A_KEY = "sk-ant-test-key-do-not-use-0123456789"
 
@@ -65,6 +66,7 @@ A_TOOL = ToolDef(
     description="List a folder.",
     parameters={"type": "object", "properties": {"path": {"type": "string"}}},
 )
+WIRE_TOOL_NAME = tool_wire_name(A_TOOL.name)
 
 
 def a_request(**overrides: Any) -> ChatRequest:
@@ -118,7 +120,7 @@ def text_delta(text: str, index: int = 0) -> dict[str, Any]:
 
 
 def tool_block(
-    index: int = 0, call_id: str = "toolu_1", name: str = "fs.list_dir"
+    index: int = 0, call_id: str = "toolu_1", name: str = WIRE_TOOL_NAME
 ) -> dict[str, Any]:
     return {
         "type": "content_block_start",
@@ -311,7 +313,7 @@ def test_an_assistant_turn_carries_tool_use_blocks_with_parsed_input() -> None:
             {
                 "type": "tool_use",
                 "id": "toolu_1",
-                "name": "fs.list_dir",
+                "name": WIRE_TOOL_NAME,
                 "input": {"path": "C:\\"},
             },
         ],
@@ -419,7 +421,7 @@ def test_tools_and_options_are_only_sent_when_asked_for() -> None:
 
     assert full["tools"] == [
         {
-            "name": "fs.list_dir",
+            "name": WIRE_TOOL_NAME,
             "description": "List a folder.",
             "input_schema": A_TOOL.parameters,
         }

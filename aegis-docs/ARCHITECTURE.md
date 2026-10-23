@@ -146,6 +146,11 @@ class ModelProvider(Protocol):
 - A `ChatRequest` has **no field a key could sit in**. Keys are read from the vault at
   call time (§ 5.3), so a request that is logged or put in an error payload cannot carry
   one, and `ProviderError` carries a short reason and a status — never a response body.
+- AEGIS keeps stable dotted tool names internally (`fs.list_dir`), while provider APIs
+  accept only restricted function identifiers. `models/tool_names.py` reversibly
+  encodes them as `aegis_<base64url>` on every provider wire and restores the dotted
+  name before the registry sees a returned call. The shared 64-character ceiling is
+  enforced before a schema can be offered.
 - The fallback chain in § 5.3 fires on `ProviderTransientError` and on nothing else.
   `ProviderAuthError`, `ProviderCapabilityError` and `ProviderProtocolError` do not
   retry: retrying a rejected key or a refusal is shopping for a yes.
@@ -246,6 +251,11 @@ Hard rules for the loop:
 
 ### 6.2 Context assembly (`agent/context.py`)
 
+System prompts are immutable, named resources under `agent/prompts/` (`planner-v1.md`,
+then `planner-v2.md`, never an inline string edited in place). `agent/prompting.py`
+loads the selected version and turns the registered tools into provider-neutral
+`ToolDef` values; each adapter then serialises that contract into its own native shape.
+
 Each planner call gets, in this order: system prompt (identity + safety rules + tool schemas) → task goal → durable task memory (facts learned, e.g. "the invoice folder is D:\\work\\inv") → the last N=5 step summaries → the current observation (screenshot, downscaled to ≤1280px on the long edge + the pruned UIA tree) → the failure log if the last step failed. Older steps are compressed by `UTILITY` into one line each. Never send the raw full-resolution screenshot; never send more than one image per call.
 
 ### 6.3 Perception (`perception/`)
@@ -275,6 +285,12 @@ that would silently ignore unknown fields. Model-produced arguments pass through
 continue to the Guardian. `is_reversible()` is true only when the registered tool
 has a callable `undo()`. If you add a tool, you add the complete contract. This is
 enforced by tests.
+
+The parameter model's class docstring is also its model-facing tool description.
+`agent.prompting.serialize_tools()` refuses a schema without one, removes the duplicate
+top-level schema title/description from the parameter object, and preserves registration
+order. User-facing approval copy still comes only from `describe(validated_params)`;
+the two audiences do not share prose.
 
 v1 tool families:
 

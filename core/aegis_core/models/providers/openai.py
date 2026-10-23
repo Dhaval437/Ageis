@@ -78,6 +78,11 @@ from aegis_core.models.schemas import (
     UsageDelta,
     UserMessage,
 )
+from aegis_core.models.tool_names import (
+    ToolNameEncodingError,
+    tool_internal_name,
+    tool_wire_name,
+)
 
 log = logging.getLogger(__name__)
 
@@ -191,7 +196,10 @@ def _wire_message(message: ChatMessage, config: ProviderConfig) -> dict[str, Any
                 {
                     "id": call.id,
                     "type": "function",
-                    "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
+                    "function": {
+                        "name": tool_wire_name(call.name),
+                        "arguments": json.dumps(call.arguments),
+                    },
                 }
                 for call in message.tool_calls
             ]
@@ -228,7 +236,7 @@ def wire_body(req: ChatRequest, config: ProviderConfig) -> dict[str, Any]:
             {
                 "type": "function",
                 "function": {
-                    "name": tool.name,
+                    "name": tool_wire_name(tool.name),
                     "description": tool.description,
                     "parameters": tool.parameters,
                 },
@@ -374,7 +382,13 @@ class ChatStream:
                 raise ProviderProtocolError(
                     self.provider_id, f"the arguments for {partial.name!r} were not an object"
                 )
-            calls.append(ToolCall(id=partial.id, name=partial.name, arguments=arguments))
+            try:
+                name = tool_internal_name(partial.name)
+            except ToolNameEncodingError as exc:
+                raise ProviderProtocolError(
+                    self.provider_id, "the model returned an invalid tool name"
+                ) from exc
+            calls.append(ToolCall(id=partial.id, name=name, arguments=arguments))
         self._calls.clear()
         return calls
 

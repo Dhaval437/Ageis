@@ -44,6 +44,7 @@ from aegis_core.models.schemas import (
     UsageDelta,
     UserMessage,
 )
+from aegis_core.models.tool_names import tool_wire_name
 
 from tests.models.test_openai import (
     Recorder,
@@ -303,7 +304,7 @@ async def test_tools_reach_a_model_that_reports_them() -> None:
     )
     await provider.aclose()
 
-    assert "fs.list_dir" in chat.requests[0].content.decode()
+    assert tool_wire_name("fs.list_dir") in chat.requests[0].content.decode()
 
 
 @pytest.mark.asyncio

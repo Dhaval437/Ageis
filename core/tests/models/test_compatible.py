@@ -31,6 +31,7 @@ from aegis_core.models.schemas import (
     UsageDelta,
     UserMessage,
 )
+from aegis_core.models.tool_names import tool_wire_name
 
 from tests.models.test_openai import (
     A_KEY,
@@ -225,7 +226,7 @@ async def test_tools_and_images_reach_a_gateway_rather_than_being_gated_off() ->
     await collect(provider_over(recorder, NVIDIA).chat(req))
 
     body = recorder.requests[0].content.decode()
-    assert "fs.list_dir" in body
+    assert tool_wire_name("fs.list_dir") in body
     assert "data:image/webp;base64,QUJD" in body
 
 

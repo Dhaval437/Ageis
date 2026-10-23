@@ -81,6 +81,11 @@ from aegis_core.models.schemas import (
     UsageDelta,
     UserMessage,
 )
+from aegis_core.models.tool_names import (
+    ToolNameEncodingError,
+    tool_internal_name,
+    tool_wire_name,
+)
 
 log = logging.getLogger(__name__)
 
@@ -170,7 +175,7 @@ def _call_names(messages: Iterable[object]) -> dict[str, str]:
     for message in messages:
         if isinstance(message, AssistantMessage):
             for call in message.tool_calls:
-                names[call.id] = call.name
+                names[call.id] = tool_wire_name(call.name)
     return names
 
 
@@ -185,7 +190,7 @@ def _wire_message(
     if isinstance(message, AssistantMessage):
         parts = [_wire_part(part) for part in message.content]
         parts.extend(
-            {"functionCall": {"name": call.name, "args": call.arguments}}
+            {"functionCall": {"name": tool_wire_name(call.name), "args": call.arguments}}
             for call in message.tool_calls
         )
         # Gemini calls the assistant `model`.
@@ -237,7 +242,7 @@ def wire_body(req: ChatRequest) -> dict[str, Any]:
             {
                 "functionDeclarations": [
                     {
-                        "name": tool.name,
+                        "name": tool_wire_name(tool.name),
                         "description": tool.description,
                         "parameters": tool.parameters,
                     }
@@ -354,7 +359,13 @@ class GenerateStream:
         call_id = call.get("id")
         if not isinstance(call_id, str) or not call_id:
             call_id = f"call_{len(self._calls) + 1}"
-        self._calls.append(ToolCall(id=call_id, name=name, arguments=arguments))
+        try:
+            internal_name = tool_internal_name(name)
+        except ToolNameEncodingError as exc:
+            raise ProviderProtocolError(
+                self.provider_id, "the model returned an invalid tool name"
+            ) from exc
+        self._calls.append(ToolCall(id=call_id, name=internal_name, arguments=arguments))
 
     def _read_usage(self, raw: object) -> None:
         """`usageMetadata` is restated in full on every chunk, so the last one wins."""
